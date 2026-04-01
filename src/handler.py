@@ -20,6 +20,7 @@ import urllib.error
 from .config import (
     DEFAULT_CLEANUP_TIMEOUT, DEFAULT_POLL_INTERVAL,
     REDIS_KEY_MONITOR, REDIS_KEY_STOP,
+    HEARTBEAT_TTL,
 )
 from .utils import get_redis_client, read_redis_flag, redis_decode
 
@@ -244,10 +245,11 @@ class StreamMonitor:
         self._emby_active_count = None
         self._emby_error = None
 
-        # Mark as running in Redis
+        # Mark as running in Redis (with heartbeat TTL so the key expires
+        # if this process dies without cleaning up).
         redis_client = get_redis_client()
         if redis_client:
-            redis_client.set(REDIS_KEY_MONITOR, "1")
+            redis_client.set(REDIS_KEY_MONITOR, "1", ex=HEARTBEAT_TTL)
             # Clear any stale stop signal
             redis_client.delete(REDIS_KEY_STOP)
 
@@ -293,6 +295,10 @@ class StreamMonitor:
                     self._running = False
                     redis_client.delete(REDIS_KEY_MONITOR, REDIS_KEY_STOP)
                     break
+
+                # Refresh heartbeat so the key doesn't expire while we're alive
+                if redis_client:
+                    redis_client.set(REDIS_KEY_MONITOR, "1", ex=HEARTBEAT_TTL)
 
                 self._poll_once()
             except Exception as e:

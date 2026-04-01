@@ -18,6 +18,7 @@ import time
 from .config import (
     PLUGIN_CONFIG, REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT,
     REDIS_KEY_STOP, DEFAULT_PORT, DEFAULT_HOST,
+    HEARTBEAT_TTL,
 )
 from .utils import get_redis_client, read_redis_flag, normalize_host
 
@@ -586,13 +587,13 @@ class DebugServer:
                     self.running = True
                     set_current_server(self)
 
-                    # Announce via Redis
+                    # Announce via Redis (with heartbeat TTL)
                     _rc = get_redis_client()
                     if _rc:
                         try:
-                            _rc.set(REDIS_KEY_RUNNING, "1")
-                            _rc.set(REDIS_KEY_HOST, self.host)
-                            _rc.set(REDIS_KEY_PORT, str(self.port))
+                            _rc.set(REDIS_KEY_RUNNING, "1", ex=HEARTBEAT_TTL)
+                            _rc.set(REDIS_KEY_HOST, self.host, ex=HEARTBEAT_TTL)
+                            _rc.set(REDIS_KEY_PORT, str(self.port), ex=HEARTBEAT_TTL)
                         except Exception as e:
                             logger.warning(f"Could not set Redis running flags: {e}")
 
@@ -619,6 +620,15 @@ class DebugServer:
                         except Exception as e:
                             logger.warning(f"Error checking stop signal: {e}")
                             monitor_redis = get_redis_client()
+
+                        # Refresh heartbeat so keys don't expire while alive
+                        if monitor_redis:
+                            try:
+                                monitor_redis.set(REDIS_KEY_RUNNING, "1", ex=HEARTBEAT_TTL)
+                                monitor_redis.expire(REDIS_KEY_HOST, HEARTBEAT_TTL)
+                                monitor_redis.expire(REDIS_KEY_PORT, HEARTBEAT_TTL)
+                            except Exception:
+                                pass
 
                         sleep(1)
 

@@ -8,6 +8,12 @@ monitor, even across multiple processes.
   3. Races all workers with SET NX EX on a leader key.
   4. Winner clears stale state and starts the StreamMonitor (and optionally
      the debug server).
+
+The per-process guard ``_autostart_launched`` prevents spawning duplicate
+threads *within a single import cycle*, but ``force_reload=True`` in
+Dispatcharr's plugin loader re-imports all modules, resetting module-level
+state.  To handle that, the autostart thread also checks Redis for an
+already-running monitor/server before doing anything destructive.
 """
 
 import logging
@@ -122,6 +128,14 @@ def _autostart_worker(monitor) -> None:
         logger.warning("Emby stream cleanup: cannot connect to Redis, aborting auto-start")
         return
 
+    # Guard: if the monitor is already running (e.g. we were force-reloaded
+    # and the old daemon thread is still alive), skip everything.  This
+    # prevents cleanup_stale_state from nuking keys for a live server.
+    from .config import REDIS_KEY_MONITOR as _RMON
+    if redis_client.get(_RMON):
+        logger.debug("Emby stream cleanup: monitor already running (Redis), skipping auto-start")
+        return
+
     worker_id = f"{os.getpid()}-{threading.get_ident()}"
     won = redis_client.set(REDIS_KEY_LEADER, worker_id, nx=True, ex=LEADER_TTL)
     if not won:
@@ -148,17 +162,22 @@ def _autostart_worker(monitor) -> None:
 
     # Optionally start the debug server
     if settings_dict.get("enable_debug_server", False):
-        port = int(settings_dict.get('port', DEFAULT_PORT))
-        host = normalize_host(
-            settings_dict.get('host', DEFAULT_HOST),
-            DEFAULT_HOST,
-        )
-
-        from .server import DebugServer
-        server = DebugServer(monitor, port=port, host=host)
-        if server.start(settings=settings_dict):
-            logger.info(
-                f"Emby stream cleanup: auto-start debug server on http://{host}:{port}/debug"
-            )
+        # Skip if debug server is already running (e.g. after force_reload)
+        from .config import REDIS_KEY_RUNNING as _RRUN
+        if redis_client.get(_RRUN):
+            logger.debug("Emby stream cleanup: debug server already running (Redis), skipping")
         else:
-            logger.warning("Emby stream cleanup: auto-start debug server failed")
+            port = int(settings_dict.get('port', DEFAULT_PORT))
+            host = normalize_host(
+                settings_dict.get('host', DEFAULT_HOST),
+                DEFAULT_HOST,
+            )
+
+            from .server import DebugServer
+            server = DebugServer(monitor, port=port, host=host)
+            if server.start(settings=settings_dict):
+                logger.info(
+                    f"Emby stream cleanup: auto-start debug server on http://{host}:{port}/debug"
+                )
+            else:
+                logger.warning("Emby stream cleanup: auto-start debug server failed")

@@ -55,6 +55,11 @@ ALL_PLUGIN_REDIS_KEYS = CLEANUP_REDIS_KEYS + [REDIS_KEY_LEADER]
 # Leader election TTL.  The winner holds this key for up to LEADER_TTL seconds.
 LEADER_TTL = 60  # seconds
 
+# Heartbeat TTL for "running" Redis keys.  The monitor and server refresh
+# their keys on every loop iteration.  If the process dies, the keys expire
+# and autostart can proceed on the next startup.
+HEARTBEAT_TTL = 30  # seconds
+
 # ── Plugin field definitions ─────────────────────────────────────────────────
 PLUGIN_FIELDS = [
     {
