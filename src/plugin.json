@@ -1,0 +1,10 @@
+{
+  "name": "Emby Stream Cleanup",
+  "version": "-dev-00000000-20260401141159",
+  "description": "Automatically terminate orphaned Dispatcharr connections when Emby users stop watching",
+  "license": "MIT",
+  "author": "sethwv",
+  "min_dispatcharr_version": "v0.22.0",
+  "help_url": "https://github.com/sethwv/emby-stream-cleanup",
+  "repo_url": "https://github.com/sethwv/emby-stream-cleanup"
+}

@@ -1,0 +1,112 @@
+name: Publish Dev Pre-release
+
+# On every push to dev, builds a fresh zip and creates a new `dev-{sha}`
+# pre-release.  Old dev-* pre-releases are cleaned up first.  The
+# update-manifest job is then called directly to rebuild the manifest branch.
+
+on:
+  push:
+    branches:
+      - dev
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: dev-prerelease
+  cancel-in-progress: true
+
+jobs:
+  dev-release:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Determine dev version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          HASH=$(git rev-parse --short=8 HEAD)
+          # Base on latest stable release version so Dispatcharr displays e.g. v3.0.0-dev-e82297bd
+          LATEST=$(gh release list --exclude-pre-releases --limit 1 --json tagName --jq '.[0].tagName // ""')
+          BASE="${LATEST#v}"  # strip leading v if present
+          if [ -z "$BASE" ]; then
+            BASE="0.0.0"
+          fi
+          PLUGIN_VERSION="${BASE}-dev-${HASH}"
+          TAG="dev-${HASH}"
+          # package.sh strips a leading dash; here there's none so zip uses the version as-is
+          ZIP="emby-stream-cleanup-${PLUGIN_VERSION}.zip"
+          echo "PLUGIN_VERSION=$PLUGIN_VERSION" >> $GITHUB_OUTPUT
+          echo "TAG=$TAG" >> $GITHUB_OUTPUT
+          echo "ZIP=$ZIP" >> $GITHUB_OUTPUT
+
+      - name: Update version in source files
+        run: |
+          sed -i "s/\"version\": \"[^\"]*\"/\"version\": \"${{ steps.version.outputs.PLUGIN_VERSION }}\"/" src/plugin.json
+
+      - name: Package plugin
+        run: |
+          chmod +x package.sh
+          ./package.sh
+
+      - name: Delete old dev pre-releases
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # List all pre-release tags starting with 'dev-' and delete them
+          gh api repos/${{ github.repository }}/releases --paginate --jq '.[] | select(.prerelease) | .tag_name' | \
+            grep '^dev-' | while read -r OLD_TAG; do
+              echo "Deleting old dev release: $OLD_TAG"
+              gh release delete "$OLD_TAG" --yes 2>/dev/null || true
+              git push origin :"refs/tags/$OLD_TAG" 2>/dev/null || true
+            done
+
+      - name: Create dev pre-release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="${{ steps.version.outputs.TAG }}"
+          ZIP="${{ steps.version.outputs.ZIP }}"
+
+          NAME=$(jq -r '.name' src/plugin.json)
+          DESCRIPTION=$(jq -r '.description' src/plugin.json)
+          AUTHOR=$(jq -r '.author' src/plugin.json)
+          LICENSE=$(jq -r '.license' src/plugin.json)
+          MIN_VER=$(jq -r '.min_dispatcharr_version' src/plugin.json)
+          HELP_URL=$(jq -r '.help_url' src/plugin.json)
+          DISCORD=$(jq -r '.discord_thread // empty' src/plugin.json)
+
+          NOTES=$(cat <<NOTES_EOF
+          **${NAME}**  dev build from the \`dev\` branch.
+
+          | Field | Value |
+          |---|---|
+          | **Description** | ${DESCRIPTION} |
+          | **Author** | ${AUTHOR} |
+          | **License** | ${LICENSE} |
+          | **Min Dispatcharr** | ${MIN_VER} |
+          | **Docs** | ${HELP_URL} |
+          NOTES_EOF
+          )
+
+          if [ -n "$DISCORD" ]; then
+            NOTES="${NOTES}
+          | **Discord** | ${DISCORD} |"
+          fi
+
+          gh release create "$TAG" \
+            --prerelease \
+            --title "Dev Build ($TAG)" \
+            --notes "$NOTES" \
+            "$ZIP"
+
+  update-manifest:
+    needs: dev-release
+    uses: ./.github/workflows/update-manifest.yml
+    permissions:
+      contents: write
