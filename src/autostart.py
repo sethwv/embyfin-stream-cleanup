@@ -85,7 +85,7 @@ def cleanup_stale_state(redis_client) -> None:
 def _autostart_worker(monitor) -> None:
     """Background thread body."""
     from .config import (
-        PLUGIN_CONFIG, REDIS_KEY_LEADER, LEADER_TTL,
+        REDIS_KEY_LEADER, LEADER_TTL,
         DEFAULT_PORT, DEFAULT_HOST, PLUGIN_DB_KEY,
     )
     from .utils import get_redis_client, normalize_host
@@ -94,7 +94,6 @@ def _autostart_worker(monitor) -> None:
     _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
 
     settings_dict: dict = {}
-    auto_start_enabled = False
 
     for attempt in range(_MAX_ATTEMPTS):
         time.sleep(_STARTUP_WAIT if attempt == 0 else _RETRY_DELAY)

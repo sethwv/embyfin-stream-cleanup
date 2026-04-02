@@ -260,50 +260,54 @@ class DebugServer:
             max-width: 800px;
             margin: 40px auto;
             padding: 20px;
-            background: #f5f5f5;
+            background: #1a1a2e;
+            color: #e0e0e0;
         }}
         .container {{
-            background: white;
+            background: #16213e;
             padding: 30px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
         }}
-        h1 {{ margin-top: 0; color: #333; font-size: 22px; }}
-        h2 {{ color: #555; font-size: 16px; margin-top: 25px; border-bottom: 1px solid #eee; padding-bottom: 8px; }}
+        h1 {{ margin-top: 0; color: #e0e0e0; font-size: 22px; }}
+        h2 {{ color: #a0a0b0; font-size: 16px; margin-top: 25px; border-bottom: 1px solid #2a2a4a; padding-bottom: 8px; }}
         .nav {{ margin-bottom: 20px; font-size: 13px; }}
-        a {{ color: #0066cc; text-decoration: none; }}
-        .config-table {{ font-size: 13px; color: #666; margin-bottom: 20px; width: 100%; }}
+        a {{ color: #64b5f6; text-decoration: none; }}
+        a:hover {{ text-decoration: underline; }}
+        .config-table {{ font-size: 13px; color: #a0a0b0; margin-bottom: 20px; width: 100%; }}
         .config-table td {{ padding: 3px 0; }}
-        .config-table td:first-child {{ color: #999; width: 140px; }}
-        .config-table span {{ color: #333; font-weight: 500; }}
+        .config-table td:first-child {{ color: #707090; width: 140px; }}
+        .config-table span {{ color: #e0e0e0; font-weight: 500; }}
         .explainer {{
-            background: #f0f7ff;
-            border: 1px solid #d0e3f7;
+            background: #1a2744;
+            border: 1px solid #2a3a5a;
             border-radius: 6px;
             padding: 14px 16px;
             font-size: 13px;
-            color: #2c5282;
+            color: #90b0d0;
             margin-bottom: 20px;
             line-height: 1.6;
         }}
-        .explainer strong {{ color: #1a365d; }}
+        .explainer strong {{ color: #b0d0f0; }}
         .card {{
-            border: 1px solid #e0e0e0;
+            border: 1px solid #2a2a4a;
             border-radius: 6px;
             padding: 14px 18px;
             margin-bottom: 12px;
+            background: #1c2541;
         }}
         .card.active {{ border-left: 4px solid #4caf50; }}
         .card.pending {{ border-left: 4px solid #ff9800; }}
-        .card.idle {{ border-left: 4px solid #9e9e9e; }}
+        .card.idle {{ border-left: 4px solid #555; }}
+        .card.grace {{ border-left: 4px solid #42a5f5; }}
         .card-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
         }}
-        .channel-num {{ font-weight: 600; font-size: 15px; }}
-        .channel-name {{ font-weight: 400; color: #888; font-size: 13px; margin-left: 6px; }}
-        .status-desc {{ font-size: 12px; color: #888; margin-top: 4px; font-style: italic; }}
+        .channel-num {{ font-weight: 600; font-size: 15px; color: #e0e0e0; }}
+        .channel-name {{ font-weight: 400; color: #707090; font-size: 13px; margin-left: 6px; }}
+        .status-desc {{ font-size: 12px; color: #707090; margin-top: 4px; font-style: italic; }}
         .badge {{
             font-size: 12px;
             padding: 3px 10px;
@@ -311,12 +315,11 @@ class DebugServer:
             font-weight: 500;
             white-space: nowrap;
         }}
-        .badge.active {{ background: #e8f5e9; color: #2e7d32; }}
-        .badge.pending {{ background: #fff3e0; color: #e65100; }}
-        .badge.idle {{ background: #f5f5f5; color: #757575; }}
-        .badge.grace {{ background: #e3f2fd; color: #1565c0; }}
-        .card.grace {{ border-left: 4px solid #42a5f5; }}
-        .grace-note {{ color: #1565c0; }}
+        .badge.active {{ background: #1b3a1b; color: #66bb6a; }}
+        .badge.pending {{ background: #3a2a10; color: #ffb74d; }}
+        .badge.idle {{ background: #2a2a2a; color: #888; }}
+        .badge.grace {{ background: #1a2a3a; color: #64b5f6; }}
+        .grace-note {{ color: #64b5f6; }}
         .section-label {{
             font-size: 11px;
             font-weight: 600;
@@ -325,17 +328,17 @@ class DebugServer:
             margin-top: 12px;
             margin-bottom: 4px;
             padding-top: 10px;
-            border-top: 1px solid #f0f0f0;
+            border-top: 1px solid #2a2a4a;
         }}
-        .section-label.target {{ color: #e65100; }}
-        .section-label.safe {{ color: #2e7d32; }}
+        .section-label.target {{ color: #ffb74d; }}
+        .section-label.safe {{ color: #66bb6a; }}
         .client-note {{
             font-size: 11px;
             font-style: italic;
             margin-bottom: 6px;
         }}
-        .target-note {{ color: #e65100; }}
-        .safe-note {{ color: #388e3c; }}
+        .target-note {{ color: #ffb74d; }}
+        .safe-note {{ color: #66bb6a; }}
         .client-row {{
             font-size: 12px;
             padding: 6px 10px;
@@ -344,12 +347,12 @@ class DebugServer:
             font-family: monospace;
         }}
         .client-row.match {{
-            background: #fff3e0;
-            border: 1px solid #ffe0b2;
+            background: #2a2010;
+            border: 1px solid #4a3a1a;
         }}
         .client-row.safe {{
-            background: #f1f8e9;
-            border: 1px solid #dcedc8;
+            background: #1a2a1a;
+            border: 1px solid #2a4a2a;
         }}
         .client-detail {{
             display: flex;
@@ -360,38 +363,38 @@ class DebugServer:
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             font-size: 11px;
         }}
-        .client-field .label {{ color: #999; }}
-        .client-field .value {{ color: #333; font-weight: 500; }}
+        .client-field .label {{ color: #707090; }}
+        .client-field .value {{ color: #e0e0e0; font-weight: 500; }}
         .match-reason {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             font-size: 11px;
-            color: #e65100;
+            color: #ffb74d;
             font-weight: 500;
         }}
         .safe-label {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             font-size: 11px;
-            color: #388e3c;
+            color: #66bb6a;
             font-weight: 500;
         }}
         .idle-warn {{
-            color: #e65100;
+            color: #ffb74d;
             font-weight: 600;
         }}
         .orphan-warn {{
-            color: #b71c1c;
+            color: #ef5350;
             font-weight: 600;
         }}
-        .empty {{ color: #999; font-style: italic; padding: 20px 0; text-align: center; }}
-        .refresh-note {{ font-size: 11px; color: #bbb; text-align: center; margin-top: 15px; }}
-        .warn {{ color: #e65100; font-weight: 500; }}
+        .empty {{ color: #707090; font-style: italic; padding: 20px 0; text-align: center; }}
+        .refresh-note {{ font-size: 11px; color: #505060; text-align: center; margin-top: 15px; }}
+        .warn {{ color: #ffb74d; font-weight: 500; }}
         .log-entry {{
             font-size: 12px;
             padding: 4px 0;
-            border-bottom: 1px solid #f5f5f5;
+            border-bottom: 1px solid #2a2a4a;
         }}
-        .log-time {{ color: #999; font-size: 11px; }}
-        .log-detail {{ color: #666; font-family: monospace; font-size: 11px; }}
+        .log-time {{ color: #707090; font-size: 11px; }}
+        .log-detail {{ color: #a0a0b0; font-family: monospace; font-size: 11px; }}
     </style>
 </head>
 <body>
@@ -445,22 +448,23 @@ class DebugServer:
             max-width: 600px;
             margin: 100px auto;
             padding: 20px;
-            background: #f5f5f5;
+            background: #1a1a2e;
+            color: #e0e0e0;
         }}
         .container {{
-            background: white;
+            background: #16213e;
             padding: 40px;
             border-radius: 8px;
-            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+            box-shadow: 0 2px 8px rgba(0,0,0,0.4);
         }}
-        h1 {{ margin-top: 0; color: #333; }}
-        .version {{ color: #999; font-size: 14px; margin-top: -10px; margin-bottom: 20px; }}
-        p {{ color: #666; line-height: 1.6; }}
-        a {{ color: #0066cc; text-decoration: none; }}
+        h1 {{ margin-top: 0; color: #e0e0e0; }}
+        .version {{ color: #707090; font-size: 14px; margin-top: -10px; margin-bottom: 20px; }}
+        p {{ color: #a0a0b0; line-height: 1.6; }}
+        a {{ color: #64b5f6; text-decoration: none; }}
         a:hover {{ text-decoration: underline; }}
-        .links {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #eee; }}
+        .links {{ margin-top: 30px; padding-top: 20px; border-top: 1px solid #2a2a4a; }}
         .links a {{ display: inline-block; margin-right: 20px; font-weight: 500; }}
-        .status {{ font-size: 13px; color: #666; margin-top: 10px; }}
+        .status {{ font-size: 13px; color: #a0a0b0; margin-top: 10px; }}
     </style>
 </head>
 <body>
