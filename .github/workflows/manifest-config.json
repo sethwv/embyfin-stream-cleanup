@@ -1,7 +1,4 @@
 {
-  "slug": "emby_stream_cleanup",
-  "registry_name": "Emby Stream Cleanup Dev",
-  "plugin_json": "src/plugin.json",
-  "logo": "src/logo.png",
-  "dev_tag": "dev-latest"
+  "dev_tag": "dev-latest",
+  "aggregator_repo": "sethwv/sethwv-plugins-dev"
 }
