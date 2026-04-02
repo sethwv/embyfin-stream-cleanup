@@ -1,6 +1,6 @@
 {
   "name": "Emby Stream Cleanup",
-  "version": "-dev-073e41c9-20260401153654",
+  "version": "-dev-d5481452-20260402095022",
   "description": "Monitors Dispatcharr client activity and terminates idle Emby connections",
   "license": "MIT",
   "author": "sethwv",
