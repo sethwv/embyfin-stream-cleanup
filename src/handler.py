@@ -644,11 +644,11 @@ class StreamMonitor:
                                     })
                                     if len(self._stopped_log) > 20:
                                         self._stopped_log = self._stopped_log[-20:]
+                                    self._idle_since.pop(ck, None)
                                 else:
                                     logger.warning(f"stop_client returned: {result}")
                             except Exception as e:
                                 logger.error(f"Error stopping client {client_id}: {e}", exc_info=True)
-                            self._idle_since.pop(ck, None)
                         elif not in_grace:
                             # Not terminating - if channel is in pool and not idle, clear tracking
                             in_pool = (media_server_channel_numbers is not None
