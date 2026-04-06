@@ -2,8 +2,8 @@
 
 Periodically scans all active channels for clients matching the configured
 client identifier(s).  When a matching client's ``last_active`` timestamp
-exceeds the idle timeout, the connection is terminated via
-``ChannelService.stop_client()``.
+exceeds the idle timeout, a Redis stop-signal key is set so the stream
+generator closes the connection cleanly.
 
 Optionally cross-references with an Emby/Jellyfin Sessions API to detect
 orphaned connections that the media server failed to close.
@@ -20,7 +20,7 @@ import urllib.error
 from .config import (
     DEFAULT_CLEANUP_TIMEOUT, DEFAULT_POLL_INTERVAL,
     REDIS_KEY_MONITOR, REDIS_KEY_STOP,
-    HEARTBEAT_TTL,
+    HEARTBEAT_TTL, PLUGIN_DB_KEY,
 )
 from .utils import get_redis_client, read_redis_flag, redis_decode
 
@@ -88,6 +88,7 @@ class StreamMonitor:
         self._last_scan = {}
         self._last_scan_time = 0
         self._stopped_log = []  # recent terminations for debug display
+        self._stop_logged = set()      # cross-cycle: {"uuid:client_id"}
         # Media server session state (updated each poll cycle)
         self._emby_active_count = None  # None=not configured, int=session count
         self._emby_error = None  # last error message, if any
@@ -234,7 +235,32 @@ class StreamMonitor:
         return sum(1 for s in sessions
                    if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES)
 
-    def _detect_orphans(self, scan_result, sessions, now, ChannelService, pool_channels_by_ident=None):
+    @staticmethod
+    def _signal_client_stop(channel_uuid, client_id, redis_client):
+        """Set the Redis stop-signal key for a client WITHOUT removing it.
+
+        ``ChannelService.stop_client()`` immediately deletes the client from
+        the Redis client set and metadata hash.  This means the client
+        becomes invisible to the next scan even though its TCP connection
+        may still be open.  The media server then reconnects with a new
+        ``client_id``, creating a flicker cycle.
+
+        By setting only the stop-signal key we let the stream generator
+        detect it on its next chunk yield, close the connection cleanly,
+        and let Dispatcharr's own cleanup remove the client from Redis.
+        The client stays visible in the scan until the connection actually
+        closes.
+        """
+        try:
+            from apps.proxy.ts_proxy.redis_keys import RedisKeys
+            stop_key = RedisKeys.client_stop(channel_uuid, client_id)
+            redis_client.setex(stop_key, 30, "true")
+            return True
+        except Exception as e:
+            logger.error(f"Error setting stop signal for {client_id}: {e}")
+            return False
+
+    def _detect_orphans(self, scan_result, sessions, now, pool_channels_by_ident=None, redis_client=None):
         """Compare Dispatcharr matched connections against active media server
         sessions by channel number.  Connections on channels the media server
         is no longer watching are orphan candidates.
@@ -324,35 +350,32 @@ class StreamMonitor:
 
             channel_number = ch_data.get("channel_number", "?")
             channel_name = ch_data.get("channel_name", "")
-            logger.info(
-                f"Terminating orphaned client {client['client_id']} on CH "
-                f"{channel_number} ({channel_name}): "
-                f"no active media server session for {orphan_age:.0f}s "
-                f"(ip={client.get('ip', '?')}, user={client.get('username', '?')})"
-            )
-            try:
-                result = ChannelService.stop_client(ch_uuid, client["client_id"])
-                if result.get("status") == "success":
-                    locally = result.get("locally_processed", False)
-                    if locally:
-                        logger.info(f"Orphaned client {client['client_id']} stopped locally")
-                    else:
-                        logger.debug(f"Stop request queued for orphaned client {client['client_id']} (remote worker)")
-                    self._stopped_log.append({
-                        "time": now,
-                        "channel": f"CH {channel_number} ({channel_name})",
-                        "ip": client.get("ip", ""),
-                        "username": client.get("username", ""),
-                        "reason": "orphan",
-                    })
-                    if len(self._stopped_log) > 20:
-                        self._stopped_log = self._stopped_log[-20:]
-                else:
-                    logger.warning(f"stop_client returned: {result}")
-            except Exception as e:
-                logger.error(f"Error stopping orphaned client: {e}", exc_info=True)
-            # Do NOT clear _orphaned_since -- keep retrying until client
-            # actually disappears from scan (stale prune handles cleanup)
+            client_id = client["client_id"]
+            sig_key = f"{ch_uuid}:{client_id}"
+
+            # Only signal once per client; the stop key has a 30s TTL and
+            # tells the stream generator to close the connection.  Re-signal
+            # each cycle to keep the TTL refreshed while the client persists.
+            if redis_client:
+                self._signal_client_stop(ch_uuid, client_id, redis_client)
+
+            if sig_key not in self._stop_logged:
+                reason = f"orphan: no media server session for {orphan_age:.0f}s"
+                logger.info(
+                    f"Terminating orphaned client {client_id} on CH "
+                    f"{channel_number} ({channel_name}): {reason} "
+                    f"(ip={client.get('ip', '?')}, user={client.get('username', '?')})"
+                )
+                self._stopped_log.append({
+                    "time": now,
+                    "channel": f"CH {channel_number} ({channel_name})",
+                    "ip": client.get("ip", ""),
+                    "username": client.get("username", ""),
+                    "reason": reason,
+                })
+                if len(self._stopped_log) > 20:
+                    self._stopped_log = self._stopped_log[-20:]
+                self._stop_logged.add(sig_key)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -381,6 +404,7 @@ class StreamMonitor:
         self._idle_since.clear()
         self._orphaned_since.clear()
         self._stopped_log.clear()
+        self._stop_logged = set()
         self._emby_active_count = None
         self._emby_error = None
 
@@ -420,6 +444,48 @@ class StreamMonitor:
         """Update settings without restarting."""
         self._settings = settings or {}
 
+    def _refresh_settings(self):
+        """Re-read settings from the database and prune stale keys.
+
+        Called each poll cycle so that UI changes (e.g. reducing
+        media_server_count) take effect without a manual restart.
+        """
+        try:
+            from apps.plugins.models import PluginConfig
+            _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
+            cfg = None
+            for _key in _plugin_keys:
+                cfg = PluginConfig.objects.filter(key=_key).first()
+                if cfg is not None:
+                    break
+            if cfg is None or not cfg.enabled:
+                return
+            new_settings = cfg.settings or {}
+
+            # Prune stale media server keys from DB
+            count = max(1, int(new_settings.get("media_server_count", 1)))
+            changed = False
+            stale = [
+                k for k in list(new_settings.keys())
+                if k.startswith(("media_server_url_", "media_server_api_key_", "media_server_identifier_"))
+            ]
+            for k in stale:
+                suffix = k.rsplit("_", 1)[-1]
+                try:
+                    if int(suffix) > count:
+                        del new_settings[k]
+                        changed = True
+                except (ValueError, TypeError):
+                    pass
+            if changed:
+                cfg.settings = new_settings
+                cfg.save(update_fields=["settings"])
+                logger.debug("Pruned stale media server keys from database")
+
+            self._settings = new_settings
+        except Exception as e:
+            logger.debug(f"Could not refresh settings from DB: {e}")
+
     # ── Poll loop ────────────────────────────────────────────────────────────
 
     def _poll_loop(self):
@@ -438,6 +504,9 @@ class StreamMonitor:
                 # Refresh heartbeat so the key doesn't expire while we're alive
                 if redis_client:
                     redis_client.set(REDIS_KEY_MONITOR, "1", ex=HEARTBEAT_TTL)
+
+                # Re-read settings from DB so UI changes take effect
+                self._refresh_settings()
 
                 self._poll_once()
             except Exception as e:
@@ -476,7 +545,6 @@ class StreamMonitor:
 
         try:
             from apps.proxy.ts_proxy.redis_keys import RedisKeys
-            from apps.proxy.ts_proxy.services.channel_service import ChannelService
         except ImportError:
             return
 
@@ -685,48 +753,29 @@ class StreamMonitor:
                                 reason = f"idle {idle_seconds:.0f}s >= {timeout}s timeout"
 
                         if should_terminate:
-                            # Rate-limit stop requests to once per poll cycle
-                            stop_key = f"_stop_sent:{channel_uuid}:{client_id}"
-                            if not getattr(self, '_stop_sent', None):
-                                self._stop_sent = set()
+                            sig_key = f"{channel_uuid}:{client_id}"
 
-                            if stop_key not in self._stop_sent:
+                            # Set the stop-signal key (idempotent; refreshes
+                            # the 30s TTL each cycle while the client persists).
+                            self._signal_client_stop(channel_uuid, client_id, redis_client)
+
+                            # Log only once per client_id
+                            if sig_key not in self._stop_logged:
                                 logger.info(
                                     f"Requesting termination of client {client_id} on CH {channel_number} "
                                     f"({channel_name}): {reason} "
                                     f"(ip={ip}, user={username})"
                                 )
-                                self._stop_sent.add(stop_key)
-                            try:
-                                result = ChannelService.stop_client(channel_uuid, client_id)
-                                locally = result.get("locally_processed", False)
-                                if result.get("status") == "success":
-                                    if locally:
-                                        logger.info(f"Client {client_id} stopped locally")
-                                    else:
-                                        logger.debug(f"Stop request queued for client {client_id} (remote worker)")
-                                    # Log only once per client
-                                    log_key = f"{channel_uuid}:{client_id}"
-                                    logged = getattr(self, '_stop_logged', set())
-                                    if log_key not in logged:
-                                        self._stopped_log.append({
-                                            "time": now,
-                                            "channel": f"CH {channel_number} ({channel_name})",
-                                            "ip": ip,
-                                            "username": username,
-                                            "reason": reason,
-                                        })
-                                        if len(self._stopped_log) > 20:
-                                            self._stopped_log = self._stopped_log[-20:]
-                                        if not hasattr(self, '_stop_logged'):
-                                            self._stop_logged = set()
-                                        self._stop_logged.add(log_key)
-                                else:
-                                    logger.warning(f"stop_client returned: {result}")
-                            except Exception as e:
-                                logger.error(f"Error stopping client {client_id}: {e}", exc_info=True)
-                            # Do NOT clear _idle_since here -- keep retrying
-                            # until the client actually disappears from the scan
+                                self._stopped_log.append({
+                                    "time": now,
+                                    "channel": f"CH {channel_number} ({channel_name})",
+                                    "ip": ip,
+                                    "username": username,
+                                    "reason": reason,
+                                })
+                                if len(self._stopped_log) > 20:
+                                    self._stopped_log = self._stopped_log[-20:]
+                                self._stop_logged.add(sig_key)
                         elif not in_grace:
                             # Not terminating - check if tracking should be cleared
                             client_pool_channels = pool_channels_by_ident.get(ip.lower()) if pool_channels_by_ident else None
@@ -760,17 +809,15 @@ class StreamMonitor:
         for k in stale:
             self._idle_since.pop(k, None)
 
-        # Clear per-cycle stop tracking; clear log dedup for gone clients
-        self._stop_sent = set()
-        if hasattr(self, '_stop_logged'):
-            active_str_keys = {f"{uuid}:{cid}" for uuid, cid in active_keys}
-            self._stop_logged = self._stop_logged & active_str_keys
+        # Prune cross-cycle tracking for clients that disappeared from scan
+        active_str_keys = {f"{uuid}:{cid}" for uuid, cid in active_keys}
+        self._stop_logged = self._stop_logged & active_str_keys
 
         # ── Media server orphan detection ────────────────────────────────
         if sessions is not None:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active
-            self._detect_orphans(scan_result, sessions, now, ChannelService, pool_channels_by_ident)
+            self._detect_orphans(scan_result, sessions, now, pool_channels_by_ident, redis_client=redis_client)
         elif self._get_media_server_configs():
             # Configured but fetch failed -- keep last count, don't orphan-kill
             pass

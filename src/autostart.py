@@ -142,11 +142,21 @@ def _autostart_worker(monitor) -> None:
         )
         return
 
-    # Check that an identifier is configured
-    client_identifier = (settings_dict.get("client_identifier") or "").strip()
-    if not client_identifier:
+    # Check that at least one media server has URL + API key + identifier
+    has_configured_server = False
+    ms_count = max(1, int(settings_dict.get("media_server_count", 1)))
+    for n in range(1, ms_count + 1):
+        sfx = f"_{n}" if n > 1 else ""
+        url = (settings_dict.get(f"media_server_url{sfx}") or "").strip()
+        key = (settings_dict.get(f"media_server_api_key{sfx}") or "").strip()
+        ident = (settings_dict.get(f"media_server_identifier{sfx}") or "").strip()
+        if url and key and ident:
+            has_configured_server = True
+            break
+    if not has_configured_server:
         logger.warning(
-            "Emby stream cleanup: auto-start skipped because client_identifier is not configured"
+            "Emby stream cleanup: auto-start skipped because no media server "
+            "is fully configured (URL + API key + identifier)"
         )
         return
 

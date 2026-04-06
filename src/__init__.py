@@ -11,7 +11,7 @@ import time
 from .config import (
     PLUGIN_CONFIG, PLUGIN_FIELDS, build_plugin_fields, PLUGIN_DB_KEY,
     REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP,
-    REDIS_KEY_MONITOR,
+    REDIS_KEY_MONITOR, ALL_PLUGIN_REDIS_KEYS,
     DEFAULT_PORT, DEFAULT_HOST,
 )
 from .handler import StreamMonitor
@@ -60,6 +60,14 @@ class Plugin:
             "button_label": "Check Status",
             "button_variant": "filled",
             "button_color": "blue",
+        },
+        {
+            "id": "reset_settings",
+            "label": "Reset Settings",
+            "description": "Wipe all saved settings and Redis keys for this plugin",
+            "button_label": "Reset All Settings",
+            "button_variant": "filled",
+            "button_color": "red",
         },
     ]
 
@@ -214,7 +222,55 @@ class Plugin:
                 "running": monitor_running or remote_monitor,
             }
 
+        # -- reset_settings ----------------------------------------------------
+        elif action == "reset_settings":
+            try:
+                result_parts = self._reset_all_settings()
+                return {
+                    "status": "success",
+                    "message": "All plugin settings wiped. " + " | ".join(result_parts)
+                        if result_parts else "All plugin settings wiped.",
+                }
+            except Exception as e:
+                logger_ctx.error(f"Error resetting settings: {e}", exc_info=True)
+                return {"status": "error", "message": f"Reset failed: {str(e)}"}
+
         return {"status": "error", "message": f"Unknown action: {action}"}
+
+    def _reset_all_settings(self):
+        """Wipe all saved settings from DB and all Redis keys for this plugin."""
+        parts = []
+
+        # Stop monitor and debug server first
+        if _monitor.is_running():
+            _monitor.stop()
+            parts.append("monitor stopped")
+        self._stop_debug_server()
+
+        # Clear all plugin Redis keys
+        redis_client = get_redis_client()
+        if redis_client:
+            deleted = redis_client.delete(*ALL_PLUGIN_REDIS_KEYS)
+            if deleted:
+                parts.append(f"{deleted} Redis key(s) deleted")
+            # Also clear any autostart dedup key
+            redis_client.delete("emby_cleanup:leader:autostart_dedup")
+
+        # Wipe saved settings in DB
+        try:
+            from apps.plugins.models import PluginConfig
+            _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
+            for _key in _plugin_keys:
+                cfg = PluginConfig.objects.filter(key=_key).first()
+                if cfg:
+                    cfg.settings = {}
+                    cfg.save(update_fields=["settings"])
+                    parts.append(f"DB settings cleared (key={_key})")
+                    break
+        except Exception as e:
+            parts.append(f"DB clear failed: {e}")
+
+        return parts
 
     def stop(self, context: dict):
         """Called when the plugin is disabled or Dispatcharr is shutting down.

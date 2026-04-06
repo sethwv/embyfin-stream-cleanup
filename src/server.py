@@ -316,7 +316,8 @@ class DebugServer:
                     ts_str = datetime.fromtimestamp(ts, tz=timezone.utc).strftime('%H:%M:%S UTC')
                     ago = int(now - ts)
                     reason = entry.get("reason", "idle")
-                    reason_label = '<span class="orphan-warn">[ORPHAN]</span> ' if reason == "orphan" else ""
+                    is_orphan = reason.startswith("orphan")
+                    reason_label = '<span class="orphan-warn">[ORPHAN]</span> ' if is_orphan else ""
                     log_ip = _mask_ip(entry.get("ip", "?")) if mask else entry.get("ip", "?")
                     log_user = _mask_username(entry.get("username", "?")) if mask else entry.get("username", "?")
                     log_html += (
@@ -326,7 +327,7 @@ class DebugServer:
                         f'{entry.get("channel", "?")} '
                         f'<span class="log-detail">ip={log_ip} '
                         f'user={log_user} '
-                        f'{entry.get("reason", "")}</span>'
+                        f'{reason}</span>'
                         f'</div>'
                     )
 
@@ -595,7 +596,6 @@ class DebugServer:
 
     # -- Client row rendering --------------------------------------------------
 
-    @staticmethod
     @staticmethod
     def _render_client_row(client, is_match, timeout=30, mask=False):
         """Render a single Dispatcharr client as an HTML row."""
