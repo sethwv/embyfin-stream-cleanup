@@ -51,7 +51,7 @@ def _mask_username(username):
 
 def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False):
     """Render a single Dispatcharr client as an HTML row."""
-    row_class = "match" if is_match else "safe"
+    row_class = "match" if is_match else "unmonitored"
     ip = client.get("ip", "?")
     username = client.get("username", "")
     if mask:
@@ -91,9 +91,10 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
         elif is_idle:
             label_html = f'<span class="match-reason">MONITORED ({match_reason}) - idle {int(idle_seconds)}s</span>'
         else:
-            label_html = f'<span class="match-reason streaming">MONITORED ({match_reason})</span>'
+            row_class = "compliant"
+            label_html = f'<span class="match-reason streaming">SAFE ({match_reason})</span>'
     else:
-        label_html = '<span class="safe-label">SAFE - not affected</span>'
+        label_html = '<span class="unmonitored-label">UNMONITORED</span>'
 
     fields = [f'<span class="client-field"><span class="label">IP:</span> <span class="value">{ip}</span></span>']
     if username:
@@ -267,8 +268,8 @@ def render_debug_page(debug_state, settings):
                     card_html += render_client_row(c, is_match=True, timeout=timeout, poll_interval=poll_interval, mask=mask)
 
             if other_clients:
-                card_html += f'<div class="section-label safe">Other Clients ({len(other_clients)})</div>'
-                card_html += '<div class="client-note safe-note">These connections will NOT be affected</div>'
+                card_html += f'<div class="section-label other">Other Clients ({len(other_clients)})</div>'
+                card_html += '<div class="client-note other-note">These connections are not monitored</div>'
                 for c in other_clients:
                     card_html += render_client_row(c, is_match=False, timeout=timeout, mask=mask)
 
@@ -404,14 +405,14 @@ def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
             border-top: 1px solid #2a2a4a;
         }}
         .section-label.target {{ color: #ffb74d; }}
-        .section-label.safe {{ color: #66bb6a; }}
+        .section-label.other {{ color: #707090; }}
         .client-note {{
             font-size: 11px;
             font-style: italic;
             margin-bottom: 6px;
         }}
         .target-note {{ color: #ffb74d; }}
-        .safe-note {{ color: #66bb6a; }}
+        .other-note {{ color: #707090; }}
         .client-row {{
             font-size: 12px;
             padding: 6px 10px;
@@ -423,9 +424,13 @@ def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
             background: #2a2010;
             border: 1px solid #4a3a1a;
         }}
-        .client-row.safe {{
+        .client-row.compliant {{
             background: #1a2a1a;
             border: 1px solid #2a4a2a;
+        }}
+        .client-row.unmonitored {{
+            background: #1e1e2e;
+            border: 1px solid #333;
         }}
         .client-detail {{
             display: flex;
@@ -444,10 +449,10 @@ def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
             color: #ffb74d;
             font-weight: 500;
         }}
-        .safe-label {{
+        .unmonitored-label {{
             font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Helvetica, Arial, sans-serif;
             font-size: 11px;
-            color: #66bb6a;
+            color: #707090;
             font-weight: 500;
         }}
         .match-reason.streaming {{
