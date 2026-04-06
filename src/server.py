@@ -147,7 +147,7 @@ class DebugServer:
 
             plugin_name = PLUGIN_CONFIG.get('name', 'Emby Stream Cleanup')
             mask = self.settings.get("mask_sensitive_data", False)
-            timeout = debug_state.get("idle_timeout", 30)
+            timeout = debug_state.get("timeout", 30)
             poll_interval = debug_state.get("poll_interval", 10)
             monitor_running = debug_state.get("running", False)
 
@@ -255,7 +255,7 @@ class DebugServer:
 
                     # Determine card status based on idle state of matched clients
                     has_idle = any(
-                        (c.get("idle_seconds") or 0) >= timeout
+                        (c.get("idle_seconds") or 0) >= poll_interval
                         for c in matched_clients
                     )
 
@@ -266,7 +266,7 @@ class DebugServer:
                     elif has_idle:
                         status_class = "pending"
                         status_label = "Idle matched clients detected"
-                        status_desc = "Matching clients will be terminated when idle timeout expires"
+                        status_desc = "Matching clients will be terminated when timeout expires"
                     elif matched_clients:
                         status_class = "active"
                         status_label = f"{len(matched_clients)} matched client(s) active"
@@ -289,10 +289,10 @@ class DebugServer:
                         card_html += f'<div class="section-label target">Matched Clients ({len(matched_clients)})</div>'
                         if ch_in_grace:
                             card_html += '<div class="client-note grace-note">Terminations PAUSED during failover/buffering</div>'
-                        else:
+                        elif has_idle:
                             card_html += '<div class="client-note target-note">Idle clients WILL be terminated after timeout</div>'
                         for c in matched_clients:
-                            card_html += self._render_client_row(c, is_match=True, timeout=timeout, mask=mask)
+                            card_html += self._render_client_row(c, is_match=True, timeout=timeout, poll_interval=poll_interval, mask=mask)
 
                     if other_clients:
                         card_html += f'<div class="section-label safe">Other Clients ({len(other_clients)})</div>'
@@ -485,6 +485,9 @@ class DebugServer:
             color: #66bb6a;
             font-weight: 500;
         }}
+        .match-reason.streaming {{
+            color: #66bb6a;
+        }}
         .idle-warn {{
             color: #ffb74d;
             font-weight: 600;
@@ -512,7 +515,7 @@ class DebugServer:
 
         <table class="config-table">
             <tr><td>Client Identifiers</td><td><span>{identifier_display}</span>{resolved_html}</td></tr>
-            <tr><td>Idle Timeout</td><td><span>{timeout}s</span></td></tr>
+            <tr><td>Timeout</td><td><span>{timeout}s</span></td></tr>
             <tr><td>Poll Interval</td><td><span>{poll_interval}s</span></td></tr>
             <tr><td>Last Scan</td><td><span>{scan_ago}</span></td></tr>
             {emby_html}
@@ -597,7 +600,7 @@ class DebugServer:
     # -- Client row rendering --------------------------------------------------
 
     @staticmethod
-    def _render_client_row(client, is_match, timeout=30, mask=False):
+    def _render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False):
         """Render a single Dispatcharr client as an HTML row."""
         row_class = "match" if is_match else "safe"
         ip = client.get("ip", "?")
@@ -610,6 +613,10 @@ class DebugServer:
         match_reason = client.get("match_reason", "")
         idle_seconds = client.get("idle_seconds")
         in_grace = client.get("in_grace", False)
+        # Don't consider a client idle unless it has been inactive
+        # longer than the poll interval — anything below that is just
+        # normal jitter between data chunks.
+        is_idle = idle_seconds is not None and idle_seconds >= poll_interval
 
         if mask and match_reason:
             # Mask identifiers inside parentheses: "IP match (192.168.1.5)" -> "IP match (192.*.*.*)"
@@ -622,16 +629,21 @@ class DebugServer:
 
         label_html = ""
         if is_match:
+            pool_absent = client.get("pool_absent_seconds")
             if client.get("is_orphan"):
                 label_html = '<span class="match-reason orphan-warn">ORPHAN (no active media server session - will terminate)</span>'
-            elif in_grace and idle_seconds is not None and idle_seconds >= timeout:
+            elif in_grace and is_idle and idle_seconds >= timeout:
                 label_html = f'<span class="match-reason" style="color:#1565c0">GRACE PERIOD (idle {int(idle_seconds)}s - termination paused)</span>'
             elif idle_seconds is not None and idle_seconds >= timeout:
                 label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (idle {int(idle_seconds)}s / {timeout}s timeout)</span>'
-            elif idle_seconds is not None:
+            elif pool_absent is not None and pool_absent >= timeout:
+                label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (absent from pool {int(pool_absent)}s / {timeout}s timeout)</span>'
+            elif pool_absent is not None:
+                label_html = f'<span class="match-reason">MONITORED ({match_reason}) - absent from pool {int(pool_absent)}s</span>'
+            elif is_idle:
                 label_html = f'<span class="match-reason">MONITORED ({match_reason}) - idle {int(idle_seconds)}s</span>'
             else:
-                label_html = f'<span class="match-reason">MONITORED ({match_reason})</span>'
+                label_html = f'<span class="match-reason streaming">MONITORED ({match_reason})</span>'
         else:
             label_html = '<span class="safe-label">SAFE - not affected</span>'
 

@@ -1,6 +1,6 @@
 # Embyfin Stream Cleanup
 
-A [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that monitors client activity and automatically terminates idle Emby/Jellyfin connections in Dispatcharr.
+A [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that automatically terminates stale Emby/Jellyfin connections in Dispatcharr.
 
 ## The Problem
 
@@ -8,19 +8,14 @@ When Emby or Jellyfin connects to Dispatcharr for live TV, client connections pe
 
 ## How It Works
 
-1. Configure a client identifier (IP address, hostname, or XC username) to tell the plugin which connections belong to your media server.
+1. Configure one or more media servers with their URL, API key, and the client identifier they use when connecting to Dispatcharr.
 2. A background monitor polls active Dispatcharr channels on a configurable interval (default: 10s).
-3. If a matching client's `last_active` timestamp goes stale longer than the idle timeout (default: 30s), the connection is terminated via `ChannelService.stop_client()`.
-4. When media server URLs are configured, the plugin also polls the Sessions API to detect **orphaned** connections - streams the media server considers stopped but Dispatcharr is still serving. These are terminated after confirmation over two consecutive poll cycles.
+3. Connections are terminated when either condition is met:
+   - **Idle**: no data has flowed for longer than the timeout (default: 30s)
+   - **Orphaned**: the channel is no longer in the media server's active session pool for longer than the timeout
+4. During stream failover or buffering the timer pauses automatically.
 
-No webhooks or external configuration needed. The plugin watches Dispatcharr's own activity data directly.
-
-## Safety
-
-- Only connections matching the configured identifier are ever affected.
-- Non-matching clients on the same channel are never touched.
-- Active connections (still receiving data) are never terminated.
-- The plugin only reads Dispatcharr's existing client metadata from Redis; it does not modify any upstream state.
+Only connections matching a configured identifier are ever affected. Non-matching clients are never touched.
 
 ## Installation
 
@@ -33,52 +28,29 @@ No webhooks or external configuration needed. The plugin watches Dispatcharr's o
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Client Identifier | _(empty)_ | IP, hostname, or XC username used to connect. Comma-separated for multiple values. Use `ALL` to match every client. |
-| Idle Timeout | `30` | Seconds a matching client must be idle before termination |
-| Poll Interval | `10` | How often (seconds) to scan for idle clients |
-| Number of Media Servers | `1` | Number of Emby/Jellyfin servers to monitor for orphan detection. After changing, save and click the blue refresh button on the My Plugins page to see the new fields. |
-| Media Server URL | _(empty)_ | Base URL (e.g. `http://192.168.1.100:8096`). Polls Sessions API for orphan detection. Leave blank to disable. |
-| Media Server API Key | _(empty)_ | API key for the media server (Settings > API Keys) |
-| Enable Debug Server | `false` | Start an HTTP debug dashboard (optional) |
-| Mask Sensitive Data | `false` | Hide usernames, IPs, and URLs in the debug dashboard |
+| Timeout | `30` | Seconds before a matching connection is terminated (idle or absent from media server pool) |
+| Poll Interval | `10` | How often (seconds) to scan for stale clients |
+| Number of Media Servers | `1` | How many Emby/Jellyfin servers to monitor. Save and refresh the page to see new fields |
+| Media Server URL | _(empty)_ | Base URL (e.g. `http://192.168.1.100:8096`) |
+| Media Server API Key | _(empty)_ | API key (Settings > API Keys in Emby/Jellyfin) |
+| Media Server Client Identifier | _(empty)_ | IP, hostname, or XC username the server uses when connecting to Dispatcharr. Comma-separated for multiple values |
+| Enable Debug Server | `false` | Start an HTTP debug dashboard |
 | Debug Server Port | `9193` | Port for the debug server |
-| Debug Server Host | `0.0.0.0` | Host address to bind the debug server to |
-
-Multiple media servers are supported. Increase the server count to add additional URL/API key pairs.
+| Debug Server Host | `0.0.0.0` | Bind address for the debug server |
 
 ### Finding Your Client Identifier
 
-Check Dispatcharr's active connections while your media server is streaming. The IP address or XC username shown for its connection is what you enter here. Multiple values can be comma-separated (e.g. `192.168.1.100, media-server`).
-
-Hostnames are automatically resolved to IP addresses.
-
-## Docker
-
-If running in Docker, expose the debug server port to use the dashboard:
-
-```yaml
-ports:
-  - "9193:9193"
-```
-
-## Debug Dashboard
-
-When enabled, visit `http://<host>:9193/debug` to see:
-
-- Media server pool status (per-server connectivity and active sessions)
-- All active channels with connected clients
-- Which clients match the configured identifier (highlighted)
-- Current idle duration per client
-- Recent termination history
-
-The page auto-refreshes at the poll interval rate.
+Check Dispatcharr's active connections while your media server is streaming. The IP address or XC username shown for its connection is what you enter as the identifier for that server.
 
 ## Plugin Actions
 
-In the Dispatcharr plugin settings page:
+- **Restart Monitor** — Apply config changes (restarts monitor and debug server)
+- **Check Status** — Show whether the monitor and debug server are running
+- **Reset All Settings** — Wipe all saved settings and Redis keys
 
-- **Restart Monitor** - Restart the stream monitor and debug server (if enabled) to apply config changes
-- **Check Status** - Show whether the monitor and debug server are running
+## Debug Dashboard
+
+When enabled, visit `http://<host>:9193/debug` to see active channels, matched clients, media server pool status, and recent terminations.
 
 ## Requirements
 
@@ -89,5 +61,3 @@ In the Dispatcharr plugin settings page:
 ```bash
 ./package.sh
 ```
-
-Creates a versioned zip file ready to upload to Dispatcharr.

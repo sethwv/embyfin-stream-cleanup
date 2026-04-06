@@ -68,13 +68,14 @@ HEARTBEAT_TTL = 30  # seconds
 _FIELDS_BEFORE_SERVERS = [
     {
         "id": "cleanup_timeout",
-        "label": "Idle Timeout (seconds)",
+        "label": "Timeout (seconds)",
         "type": "number",
         "default": DEFAULT_CLEANUP_TIMEOUT,
         "description": (
-            "Seconds a matching client must be idle (no data flowing) before "
-            "its Dispatcharr connection is terminated. "
-            "During stream failover or buffering the timer is paused automatically"
+            "Seconds before a matching client's Dispatcharr connection is terminated. "
+            "Applies to idle connections (no data flowing) and connections whose "
+            "channel is no longer in the media server's active session pool. "
+            "Paused automatically during stream failover or buffering"
         ),
         "placeholder": "30",
     },

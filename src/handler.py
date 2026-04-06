@@ -327,8 +327,9 @@ class StreamMonitor:
             return
 
         poll_interval = max(int(self._settings.get("poll_interval", DEFAULT_POLL_INTERVAL)), 1)
-        # Require orphan candidates to be confirmed across multiple poll cycles
-        confirm_threshold = poll_interval * 2
+        timeout = int(self._settings.get("cleanup_timeout", DEFAULT_CLEANUP_TIMEOUT))
+        # Orphans must persist for the full idle timeout before termination
+        confirm_threshold = max(timeout, poll_interval * 2)
 
         for ch_uuid, ch_data, client in orphan_candidates:
             ck = (ch_uuid, client["client_id"])
@@ -710,6 +711,7 @@ class StreamMonitor:
                         "idle_seconds": round(idle_seconds, 1) if idle_seconds is not None else None,
                         "in_grace": in_grace,
                         "is_orphan": False,
+                        "pool_absent_seconds": None,
                     }
                     channel_clients.append(client_info)
 
@@ -734,8 +736,10 @@ class StreamMonitor:
                                             f"Client {client_id} ({ip}) on CH {channel_number} "
                                             f"not in its media server pool - tracking"
                                         )
+                                        client_info["pool_absent_seconds"] = 0
                                     else:
                                         absent_seconds = now - self._idle_since[ck]
+                                        client_info["pool_absent_seconds"] = round(absent_seconds, 1)
                                         if absent_seconds >= timeout:
                                             should_terminate = True
                                             reason = (
@@ -855,7 +859,7 @@ class StreamMonitor:
             "running": self._running,
             "scan": self._last_scan,
             "scan_time": self._last_scan_time,
-            "idle_timeout": timeout,
+            "timeout": timeout,
             "poll_interval": poll_interval,
             "identifier_configured": bool(all_identifiers),
             "identifiers": sorted(all_identifiers),
