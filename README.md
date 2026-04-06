@@ -77,8 +77,7 @@ The page auto-refreshes at the poll interval rate.
 
 In the Dispatcharr plugin settings page:
 
-- **Restart Monitor** - Restart the background activity monitor (applies config changes)
-- **Start / Stop Server** - Toggle the debug dashboard HTTP server
+- **Restart Monitor** - Restart the stream monitor and debug server (if enabled) to apply config changes
 - **Check Status** - Show whether the monitor and debug server are running
 
 ## Requirements

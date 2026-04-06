@@ -48,18 +48,10 @@ class Plugin:
         {
             "id": "restart_monitor",
             "label": "Restart Monitor",
-            "description": "Restart the stream monitor to apply config changes",
+            "description": "Restart the stream monitor (and debug server if enabled)",
             "button_label": "Restart Monitor",
             "button_variant": "filled",
             "button_color": "orange",
-        },
-        {
-            "id": "toggle_debug_server",
-            "label": "Toggle Debug Server",
-            "description": "Start or stop the debug dashboard HTTP server",
-            "button_label": "Start / Stop Server",
-            "button_variant": "filled",
-            "button_color": "blue",
         },
         {
             "id": "status",
@@ -78,6 +70,22 @@ class Plugin:
 
     # -- Action dispatcher -----------------------------------------------------
 
+    def _stop_debug_server(self):
+        """Stop the debug server if running (local or remote worker)."""
+        server = get_current_server()
+        if server and server.is_running():
+            server.stop()
+            return
+
+        redis_client = get_redis_client()
+        if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+            redis_client.set(REDIS_KEY_STOP, "1")
+            for _ in range(50):
+                if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+                    return
+                time.sleep(0.1)
+            redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
+
     def run(self, action: str, params: dict, context: dict):
         """Execute a plugin action and return a result dict."""
         logger_ctx = context.get("logger", logger)
@@ -86,60 +94,43 @@ class Plugin:
         # -- restart_monitor ---------------------------------------------------
         if action == "restart_monitor":
             try:
+                # Check if debug server was running before we stop it
+                debug_was_running = False
+                server = get_current_server()
+                if server and server.is_running():
+                    debug_was_running = True
+                else:
+                    redis_client = get_redis_client()
+                    if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+                        debug_was_running = True
+
+                self._stop_debug_server()
+
                 if _monitor.is_running():
                     _monitor.stop()
-                    # Brief pause so Redis keys are cleaned up before restart
                     time.sleep(0.5)
 
-                if _monitor.start(settings=settings):
-                    return {"status": "success", "message": "Stream monitor restarted with current settings"}
-                return {"status": "error", "message": "Failed to start stream monitor"}
+                if not _monitor.start(settings=settings):
+                    return {"status": "error", "message": "Failed to start stream monitor"}
+
+                msg = "Stream monitor restarted with current settings"
+
+                # Start debug server if enabled
+                if settings.get("enable_debug_server", False):
+                    port = int(settings.get("port", DEFAULT_PORT))
+                    host = normalize_host(settings.get("host", DEFAULT_HOST), DEFAULT_HOST)
+                    server = DebugServer(_monitor, port=port, host=host)
+                    if server.start(settings=settings):
+                        msg += f" | Debug server on http://{host}:{port}/debug"
+                    else:
+                        msg += " | Debug server failed to start (port may be in use)"
+                elif debug_was_running:
+                    msg += " | Debug server stopped (disabled in settings)"
+
+                return {"status": "success", "message": msg}
             except Exception as e:
                 logger_ctx.error(f"Error restarting monitor: {e}", exc_info=True)
                 return {"status": "error", "message": f"Failed to restart monitor: {str(e)}"}
-
-        # -- toggle_debug_server -----------------------------------------------
-        elif action == "toggle_debug_server":
-            server = get_current_server()
-            server_running = server and server.is_running()
-
-            redis_client = get_redis_client()
-            remote_running = redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING)
-
-            # If running anywhere, stop it
-            if server_running or remote_running:
-                # Flag manual stop so autostart won't re-launch
-                if redis_client:
-                    try:
-                        from .config import REDIS_KEY_MANUAL_STOP
-                        redis_client.set(REDIS_KEY_MANUAL_STOP, "1")
-                    except Exception:
-                        pass
-
-                if server_running:
-                    server.stop()
-                    return {"status": "success", "message": "Debug server stopped"}
-
-                # Signal remote worker
-                if redis_client and remote_running:
-                    redis_client.set(REDIS_KEY_STOP, "1")
-                    for _ in range(50):
-                        if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                            return {"status": "success", "message": "Debug server stopped"}
-                        time.sleep(0.1)
-                    redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
-                    return {"status": "warning", "message": "Stop signal sent but server did not confirm. Redis keys cleared."}
-
-            # Not running, start it
-            port = int(settings.get("port", DEFAULT_PORT))
-            host = normalize_host(settings.get("host", DEFAULT_HOST), DEFAULT_HOST)
-            server = DebugServer(_monitor, port=port, host=host)
-            if server.start(settings=settings):
-                return {
-                    "status": "success",
-                    "message": f"Debug server started on http://{host}:{port}/debug",
-                }
-            return {"status": "error", "message": "Failed to start debug server. Port may be in use."}
 
         # -- status ------------------------------------------------------------
         elif action == "status":
