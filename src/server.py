@@ -146,25 +146,28 @@ class DebugServer:
             now = time.time()
 
             plugin_name = PLUGIN_CONFIG.get('name', 'Emby Stream Cleanup')
-            identifier = self.settings.get("client_identifier", "") or ""
             mask = self.settings.get("mask_sensitive_data", False)
-            identifier_display = identifier or "(not set)"
             timeout = debug_state.get("idle_timeout", 30)
             poll_interval = debug_state.get("poll_interval", 10)
             monitor_running = debug_state.get("running", False)
+
+            # Build identifier display from per-server configs
+            all_identifiers = debug_state.get("identifiers", [])
+            identifier_display = ", ".join(all_identifiers).upper() if all_identifiers else "(not configured)"
+            if mask and all_identifiers:
+                identifier_display = ", ".join(
+                    _mask_ip(v) if _IP_RE.fullmatch(v) else _mask_username(v)
+                    for v in all_identifiers
+                ).upper()
 
             # Resolved IPs info
             resolved_ips = debug_state.get("resolved_ips", [])
             resolved_html = ""
             if mask:
-                identifier_display = ", ".join(
-                    _mask_ip(v.strip()) if _IP_RE.fullmatch(v.strip()) else _mask_username(v.strip())
-                    for v in identifier.split(",")
-                ) if identifier and identifier != "ALL" else identifier_display
-                if resolved_ips and identifier:
+                if resolved_ips and all_identifiers:
                     resolved_html = f' &rarr; <span>{", ".join(_mask_ip(ip) for ip in resolved_ips)}</span>'
             else:
-                if resolved_ips and identifier:
+                if resolved_ips and all_identifiers:
                     resolved_html = f' &rarr; <span>{", ".join(resolved_ips)}</span>'
 
             # Monitor status
@@ -191,6 +194,7 @@ class DebugServer:
                 # Build per-server cards
                 if media_servers:
                     media_server_cards = '<h2>Media Servers</h2>'
+                    server_identifiers = debug_state.get("server_identifiers", {})
                     for srv in media_servers:
                         srv_num = srv.get("num", "?")
                         srv_type = srv.get("type")
@@ -199,6 +203,11 @@ class DebugServer:
                         if srv_type:
                             srv_label += f' ({srv_type})'
                         srv_url_display = _mask_url(srv_url) if mask else srv_url
+                        srv_idents = server_identifiers.get(srv_num, [])
+                        idents_display = ", ".join(
+                            (_mask_ip(i) if _IP_RE.fullmatch(i) else _mask_username(i)) if mask else i
+                            for i in srv_idents
+                        ).upper() if srv_idents else "(no identifier)"
                         srv_active = srv.get("active")
                         srv_error = srv.get("error")
                         if srv_error:
@@ -226,6 +235,7 @@ class DebugServer:
                             f'{srv_badge}'
                             f'</div>'
                             f'<div class="status-desc">{srv_url_display} - {srv_detail}</div>'
+                            f'<div class="status-desc">Identifier: <strong>{idents_display}</strong></div>'
                             f'</div>'
                         )
 
@@ -500,7 +510,7 @@ class DebugServer:
         <h1>Debug {monitor_badge}</h1>
 
         <table class="config-table">
-            <tr><td>Client Identifier</td><td><span>{identifier_display}</span>{resolved_html}</td></tr>
+            <tr><td>Client Identifiers</td><td><span>{identifier_display}</span>{resolved_html}</td></tr>
             <tr><td>Idle Timeout</td><td><span>{timeout}s</span></td></tr>
             <tr><td>Poll Interval</td><td><span>{poll_interval}s</span></td></tr>
             <tr><td>Last Scan</td><td><span>{scan_ago}</span></td></tr>
@@ -510,10 +520,10 @@ class DebugServer:
         <div class="explainer">
             <strong>How it works:</strong>
             The monitor polls all active Dispatcharr channels every <strong>{poll_interval}s</strong>.
-            Clients matching the identifier <strong>{identifier_display}</strong> are tracked.
-            If a matching client stops receiving data for <strong>{timeout}s</strong>, its connection is terminated.
-            When an Emby/Jellyfin server URL is configured, the plugin also cross-references active
-            media server sessions to detect <strong>orphaned</strong> connections that the server failed to close.
+            Each configured media server has client identifiers that link its session pool to
+            Dispatcharr connections. When a connection's channel is no longer in its server's
+            active session pool for <strong>{timeout}s</strong>, the connection is terminated.
+            Idle connections (no data flowing for <strong>{timeout}s</strong>) are also terminated.
             Non-matching clients are <strong>never</strong> affected.
         </div>
 

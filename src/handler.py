@@ -16,7 +16,6 @@ import threading
 import time
 import urllib.request
 import urllib.error
-from urllib.parse import urlparse
 
 from .config import (
     DEFAULT_CLEANUP_TIMEOUT, DEFAULT_POLL_INTERVAL,
@@ -135,20 +134,26 @@ class StreamMonitor:
     # ── Media server session helpers ─────────────────────────────────────────
 
     def _get_media_server_configs(self):
-        """Return a list of (url, api_key) tuples for all configured servers."""
+        """Return a list of (url, api_key, identifiers) tuples for all configured servers.
+
+        ``identifiers`` is a set of lowercased client identifiers tied to this
+        server (from the per-server identifier config field).
+        """
         count = max(1, int(self._settings.get("media_server_count", 1)))
         servers = []
         for n in range(1, count + 1):
             suffix = f"_{n}" if n > 1 else ""
             url = (self._settings.get(f"media_server_url{suffix}") or "").strip().rstrip("/")
             key = (self._settings.get(f"media_server_api_key{suffix}") or "").strip()
+            ident_raw = (self._settings.get(f"media_server_identifier{suffix}") or "").strip()
             # Migrate legacy field names from single-server config
             if n == 1 and not url:
                 url = (self._settings.get("emby_url") or "").strip().rstrip("/")
             if n == 1 and not key:
                 key = (self._settings.get("emby_api_key") or "").strip()
             if url and key:
-                servers.append((url, key))
+                idents = {v.strip().lower() for v in ident_raw.split(",") if v.strip()}
+                servers.append((url, key, idents))
         return servers
 
     @staticmethod
@@ -183,7 +188,7 @@ class StreamMonitor:
         all_sessions = []
         errors = []
         per_server = []
-        for idx, (url, api_key) in enumerate(servers, 1):
+        for idx, (url, api_key, _idents) in enumerate(servers, 1):
             endpoint = f"{url}/Sessions"
             # Detect server type on first encounter or after error
             server_type = getattr(self, "_server_types", {}).get(url)
@@ -228,13 +233,13 @@ class StreamMonitor:
         return sum(1 for s in sessions
                    if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES)
 
-    def _detect_orphans(self, scan_result, sessions, now, ChannelService, pool_channels_by_ip=None):
+    def _detect_orphans(self, scan_result, sessions, now, ChannelService, pool_channels_by_ident=None):
         """Compare Dispatcharr matched connections against active media server
         sessions by channel number.  Connections on channels the media server
         is no longer watching are orphan candidates.
 
-        When ``pool_channels_by_ip`` is provided, only channels from the
-        client's own media server are considered (per-IP pool protection).
+        When ``pool_channels_by_ident`` is provided, only channels from the
+        client's own media server are considered (per-identifier pool protection).
 
         Orphans must also be idle and are confirmed over multiple poll cycles
         before termination to avoid race conditions during channel switches.
@@ -273,9 +278,9 @@ class StreamMonitor:
             client_ip = (item[2].get("ip") or "").lower()
 
             # Use per-IP pool if available for this client
-            if pool_channels_by_ip and client_ip in pool_channels_by_ip:
-                client_channels = pool_channels_by_ip[client_ip]
-            elif pool_channels_by_ip:
+            if pool_channels_by_ident and client_ip in pool_channels_by_ident:
+                client_channels = pool_channels_by_ident[client_ip]
+            elif pool_channels_by_ident:
                 # Client IP doesn't match any configured server -- not covered
                 # by pool, so it's a potential orphan by definition
                 client_channels = set()
@@ -441,11 +446,19 @@ class StreamMonitor:
         if not redis_client:
             return
 
-        client_identifier = (self._settings.get("client_identifier") or "").strip()
-        if not client_identifier:
+        # Require at least one fully configured media server (URL + key + identifier)
+        servers = self._get_media_server_configs()
+        if not servers:
             return
 
-        identifiers = self._parse_identifiers(client_identifier)
+        configured_servers = [(url, key, idents) for url, key, idents in servers if idents]
+        if not configured_servers:
+            return
+
+        # Build unified identifier set from all server configs
+        identifiers = set()
+        for _url, _key, idents in configured_servers:
+            identifiers.update(idents)
         if not identifiers:
             return
 
@@ -482,30 +495,16 @@ class StreamMonitor:
         # Fetch media server sessions early so idle termination can cross-check
         sessions = self._fetch_media_server_sessions()
         media_server_channel_numbers = None  # flat set for orphan detection
-        # Per-server-IP channel sets: {resolved_ip: set(channel_numbers)}
-        # Only clients whose IP matches a configured server get pool protection
-        pool_channels_by_ip = {}
+        # Per-identifier channel sets: {identifier: set(channel_numbers)}
+        # Only clients whose IP/hostname matches a server's identifier get pool protection
+        pool_channels_by_ident = {}
         if sessions is not None:
             media_server_channel_numbers = set()
             servers = self._get_media_server_configs()
-            # Build a mapping of server hostname IPs → session channel numbers
-            server_ips = {}
-            for url, _key in servers:
-                try:
-                    hostname = urlparse(url).hostname or ""
-                    # Resolve hostname to IPs
-                    for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
-                        resolved_ip = info[4][0]
-                        server_ips[resolved_ip] = url
-                except Exception:
-                    pass
-            # Also map the raw hostnames (in case client IP matches literally)
-            for url, _key in servers:
-                try:
-                    hostname = urlparse(url).hostname or ""
-                    server_ips[hostname.lower()] = url
-                except Exception:
-                    pass
+            # Build mapping: server URL → set of identifiers
+            url_to_idents = {}
+            for url, _key, idents in servers:
+                url_to_idents[url] = idents
 
             for s in sessions:
                 npi = s.get("NowPlayingItem", {})
@@ -518,15 +517,10 @@ class StreamMonitor:
                     except (ValueError, TypeError):
                         pass
                     media_server_channel_numbers.add(ch_num)
-                    # Tag this channel to all IPs of the server that reported it
-                    # Sessions come from _fetch_media_server_sessions which
-                    # merges all servers, so we need to figure out which server
-                    # this session came from.  We tag the session's source URL
-                    # during fetch below.
+                    # Tag this channel to the identifiers of the server that reported it
                     source_url = s.get("_source_url", "")
-                    for ip, url in server_ips.items():
-                        if url == source_url:
-                            pool_channels_by_ip.setdefault(ip, set()).add(ch_num)
+                    for ident in url_to_idents.get(source_url, set()):
+                        pool_channels_by_ident.setdefault(ident, set()).add(ch_num)
 
         try:
             for key in redis_client.scan_iter(match="channel_stream:*"):
@@ -655,9 +649,9 @@ class StreamMonitor:
 
                         if not in_grace:
                             # Check media server pool (if configured)
-                            # Only apply pool protection if this client's IP
-                            # matches a configured media server
-                            client_pool_channels = pool_channels_by_ip.get(ip.lower()) if pool_channels_by_ip else None
+                            # Only apply pool protection if this client's
+                            # identifier matches a configured media server
+                            client_pool_channels = pool_channels_by_ident.get(ip.lower()) if pool_channels_by_ident else None
                             if client_pool_channels is not None:
                                 if channel_number not in client_pool_channels:
                                     # Track how long absent from this client's server pool
@@ -730,7 +724,7 @@ class StreamMonitor:
                             # until the client actually disappears from the scan
                         elif not in_grace:
                             # Not terminating - check if tracking should be cleared
-                            client_pool_channels = pool_channels_by_ip.get(ip.lower()) if pool_channels_by_ip else None
+                            client_pool_channels = pool_channels_by_ident.get(ip.lower()) if pool_channels_by_ident else None
                             in_pool = (client_pool_channels is not None
                                        and channel_number in client_pool_channels)
                             not_idle = (idle_seconds is not None and idle_seconds < timeout)
@@ -771,7 +765,7 @@ class StreamMonitor:
         if sessions is not None:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active
-            self._detect_orphans(scan_result, sessions, now, ChannelService, pool_channels_by_ip)
+            self._detect_orphans(scan_result, sessions, now, ChannelService, pool_channels_by_ident)
         elif self._get_media_server_configs():
             # Configured but fetch failed -- keep last count, don't orphan-kill
             pass
@@ -790,9 +784,18 @@ class StreamMonitor:
 
     def get_debug_state(self):
         """Return current state for the debug page."""
-        client_identifier = (self._settings.get("client_identifier") or "").strip()
-        identifiers = self._parse_identifiers(client_identifier)
-        resolved_ips = self._resolve_identifiers(identifiers)
+        servers = self._get_media_server_configs()
+        # Build per-server identifier info for display
+        all_identifiers = set()
+        server_identifiers = {}  # server_num -> set of identifiers
+        for url, _key, idents in servers:
+            all_identifiers.update(idents)
+            # Find the server number from media_server_status
+            for ms in self._media_server_status:
+                if ms.get("url") == url:
+                    server_identifiers[ms["num"]] = sorted(idents)
+                    break
+        resolved_ips = self._resolve_identifiers(all_identifiers)
         timeout = int(self._settings.get("cleanup_timeout", DEFAULT_CLEANUP_TIMEOUT))
         poll_interval = int(self._settings.get("poll_interval", DEFAULT_POLL_INTERVAL))
 
@@ -802,10 +805,12 @@ class StreamMonitor:
             "scan_time": self._last_scan_time,
             "idle_timeout": timeout,
             "poll_interval": poll_interval,
-            "identifier_configured": bool(identifiers),
+            "identifier_configured": bool(all_identifiers),
+            "identifiers": sorted(all_identifiers),
+            "server_identifiers": server_identifiers,
             "resolved_ips": sorted(resolved_ips) if resolved_ips else [],
             "stopped_log": list(self._stopped_log),
-            "emby_configured": bool(self._get_media_server_configs()),
+            "emby_configured": bool(servers),
             "emby_active_count": self._emby_active_count,
             "emby_error": self._emby_error,
             "media_servers": list(self._media_server_status),

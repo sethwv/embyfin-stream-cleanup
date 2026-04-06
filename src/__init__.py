@@ -97,7 +97,8 @@ class Plugin:
             # Server N>1 uses suffixed keys (media_server_url_N, media_server_api_key_N)
             stale_keys = [
                 k for k in list(cfg.settings.keys())
-                if k.startswith("media_server_url_") or k.startswith("media_server_api_key_")
+                if (k.startswith("media_server_url_") or k.startswith("media_server_api_key_")
+                    or k.startswith("media_server_identifier_"))
             ]
             for k in stale_keys:
                 # Extract the server number from the suffix
@@ -114,7 +115,7 @@ class Plugin:
                 cfg.save(update_fields=["settings"])
                 # Update the live settings dict so the monitor gets clean values
                 for k in list(settings.keys()):
-                    if k.startswith(("media_server_url_", "media_server_api_key_")):
+                    if k.startswith(("media_server_url_", "media_server_api_key_", "media_server_identifier_")):
                         suffix = k.rsplit("_", 1)[-1]
                         try:
                             if int(suffix) > count:

@@ -67,19 +67,6 @@ HEARTBEAT_TTL = 30  # seconds
 # Fields that appear before the media server section
 _FIELDS_BEFORE_SERVERS = [
     {
-        "id": "client_identifier",
-        "label": "Client Identifier",
-        "type": "string",
-        "default": "",
-        "description": (
-            "IP address, hostname, or XC username used by the target client to connect to Dispatcharr. "
-            "Comma-separated list for multiple values (e.g. '192.168.1.100, media-server'). "
-            "Use 'ALL' to match every client. "
-            "Matched against client IP and username to identify connections."
-        ),
-        "placeholder": "192.168.1.100, media-server, or ALL",
-    },
-    {
         "id": "cleanup_timeout",
         "label": "Idle Timeout (seconds)",
         "type": "number",
@@ -178,6 +165,19 @@ def _build_server_fields(n):
                 "Generate one under Settings > API Keys"
             ),
             "placeholder": "your-api-key",
+        },
+        {
+            "id": f"media_server_identifier{suffix}",
+            "label": f"Media Server{label_num} Client Identifier",
+            "type": "string",
+            "default": "",
+            "description": (
+                f"The IP, hostname, or label that media server{label_num} uses when "
+                "connecting to Dispatcharr (as shown in the Client Identifier column). "
+                "Comma-separated for multiple values. "
+                "This links the server's session pool to its connections for accurate cleanup"
+            ),
+            "placeholder": "emby-prod, 192.168.1.100",
         },
     ]
 
