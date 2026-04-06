@@ -109,8 +109,8 @@ _MEDIA_SERVER_COUNT_FIELD = {
     "min": 1,
     "description": (
         "Number of Emby/Jellyfin servers to monitor for orphan detection. "
-        "After changing this value, save settings and restart the plugin "
-        "to see the new server fields"
+        "After changing this value, save settings and click the blue refresh "
+        "button in the top-right of the My Plugins page to see the new fields"
     ),
     "placeholder": "1",
 }
