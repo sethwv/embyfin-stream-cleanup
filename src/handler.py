@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 from .config import (
     DEFAULT_CLEANUP_TIMEOUT, DEFAULT_POLL_INTERVAL,
