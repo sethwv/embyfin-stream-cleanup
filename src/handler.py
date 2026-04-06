@@ -49,6 +49,23 @@ def _get_failover_grace():
         return 35  # safe default: 20 + 15
 
 
+def _resolve_username(user_id_str, cache):
+    """Resolve a Redis user_id string to a Django username.
+
+    Uses *cache* (dict) to avoid repeated DB hits within one poll cycle.
+    """
+    try:
+        uid = int(user_id_str)
+        if uid <= 0:
+            return ""
+        if uid not in cache:
+            from apps.accounts.models import User
+            cache[uid] = User.objects.get(id=uid).username
+        return cache[uid]
+    except Exception:
+        return ""
+
+
 class StreamMonitor:
     """Background poller that watches Dispatcharr client activity and
     terminates idle connections matching the configured identifier."""
@@ -339,6 +356,7 @@ class StreamMonitor:
 
         # Build channel model cache for names
         channel_model_cache = {}
+        _user_cache = {}  # per-scan cache: user_id int -> username str
         try:
             from apps.channels.models import Channel
             for ch in Channel.objects.only("channel_number", "name", "uuid"):
@@ -425,7 +443,8 @@ class StreamMonitor:
                         continue
 
                     ip = redis_decode(cdata.get(b"ip_address") or cdata.get("ip_address"))
-                    username = redis_decode(cdata.get(b"username") or cdata.get("username"))
+                    user_id_str = redis_decode(cdata.get(b"user_id") or cdata.get("user_id"))
+                    username = _resolve_username(user_id_str, _user_cache)
                     user_agent = redis_decode(cdata.get(b"user_agent") or cdata.get("user_agent"))
                     connected_at = redis_decode(cdata.get(b"connected_at") or cdata.get("connected_at"))
                     last_active_raw = redis_decode(cdata.get(b"last_active") or cdata.get("last_active"))
