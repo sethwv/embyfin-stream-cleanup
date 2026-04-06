@@ -47,6 +47,29 @@ def _mask_username(username):
     return username[0] + "***" + username[-1]
 
 
+# ── Inline SVG icons (small, for match labels) ─────────────────────────────
+
+_EMBY_ICON_SM = '<svg class="srv-icon-sm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="m97.1 229.4 26.5 26.5L0 379.5l132.4 132.4 26.5-26.5L282.5 609l141.2-141.2-26.5-26.5L512 326.5 379.6 194.1l-26.5 26.5L229.5 97z" style="fill:#52b54b" transform="translate(0 -97)"/><path d="M196.8 351.2v-193L366 254.7 281.4 303z" style="fill:#fff"/></svg>'
+_JELLYFIN_ICON_SM = '<svg class="srv-icon-sm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><linearGradient id="jfl-a" x1="97.508" x2="522.069" y1="308.135" y2="63.019" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 196.2c-22.4 0-94.8 131.3-83.8 153.4s156.8 21.9 167.7 0-61.3-153.4-83.9-153.4" style="fill:url(#jfl-a)"/><linearGradient id="jfl-b" x1="94.193" x2="518.754" y1="302.394" y2="57.278" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 0C188.3 0-29.8 395.4 3.4 462.2s472.3 66 505.2 0S323.8 0 256 0m165.6 404.3c-21.6 43.2-309.3 43.8-331.1 0S211.7 101.4 256 101.4 443.2 361 421.6 404.3" style="fill:url(#jfl-b)"/></svg>'
+
+
+def _server_badge(match_server):
+    """Build inline server icon + name HTML for match labels."""
+    if not match_server:
+        return ""
+    srv_type = match_server.get("type")
+    srv_name = match_server.get("name")
+    if not srv_name and not srv_type:
+        return ""
+    icon = ""
+    if srv_type == "Emby":
+        icon = _EMBY_ICON_SM + " "
+    elif srv_type == "Jellyfin":
+        icon = _JELLYFIN_ICON_SM + " "
+    label = srv_name or srv_type
+    return f'{icon}{label} - '
+
+
 # ── Client row rendering ────────────────────────────────────────────────────
 
 def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False):
@@ -60,6 +83,7 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
     user_agent = client.get("user_agent", "")
     duration = client.get("connected_duration", "")
     match_reason = client.get("match_reason", "")
+    match_server = client.get("match_server")
     idle_seconds = client.get("idle_seconds")
     in_grace = client.get("in_grace", False)
     # Don't consider a client idle unless it has been inactive
@@ -76,23 +100,24 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
         match_reason = re.sub(r'\(([^)]+)\)', _mask_match_reason, match_reason)
 
     label_html = ""
+    srv_badge = _server_badge(match_server) if is_match else ""
     if is_match:
         pool_absent = client.get("pool_absent_seconds")
         if client.get("is_orphan"):
-            label_html = '<span class="match-reason orphan-warn">ORPHAN (no active media server session - will terminate)</span>'
+            label_html = f'<span class="match-reason orphan-warn">ORPHAN - {srv_badge}{match_reason} (no active media server session - will terminate)</span>'
         elif in_grace and is_idle and idle_seconds >= timeout:
-            label_html = f'<span class="match-reason" style="color:#1565c0">GRACE PERIOD (idle {int(idle_seconds)}s - termination paused)</span>'
+            label_html = f'<span class="match-reason" style="color:#1565c0">GRACE PERIOD - {srv_badge}{match_reason} (idle {int(idle_seconds)}s - termination paused)</span>'
         elif idle_seconds is not None and idle_seconds >= timeout:
-            label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (idle {int(idle_seconds)}s / {timeout}s timeout)</span>'
+            label_html = f'<span class="match-reason idle-warn">WILL TERMINATE - {srv_badge}{match_reason} (idle {int(idle_seconds)}s / {timeout}s timeout)</span>'
         elif pool_absent is not None and pool_absent >= timeout:
-            label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (absent from pool {int(pool_absent)}s / {timeout}s timeout)</span>'
+            label_html = f'<span class="match-reason idle-warn">WILL TERMINATE - {srv_badge}{match_reason} (absent from pool {int(pool_absent)}s / {timeout}s timeout)</span>'
         elif pool_absent is not None:
-            label_html = f'<span class="match-reason">MONITORED - {match_reason} - absent from pool {int(pool_absent)}s</span>'
+            label_html = f'<span class="match-reason">MONITORED - {srv_badge}{match_reason} - absent from pool {int(pool_absent)}s</span>'
         elif is_idle:
-            label_html = f'<span class="match-reason">MONITORED - {match_reason} - idle {int(idle_seconds)}s</span>'
+            label_html = f'<span class="match-reason">MONITORED - {srv_badge}{match_reason} - idle {int(idle_seconds)}s</span>'
         else:
             row_class = "compliant"
-            label_html = f'<span class="match-reason streaming">SAFE - {match_reason}</span>'
+            label_html = f'<span class="match-reason streaming">SAFE - {srv_badge}{match_reason}</span>'
     else:
         label_html = '<span class="unmonitored-label">UNMONITORED</span>'
 
@@ -153,9 +178,15 @@ def render_debug_page(debug_state, settings):
             for srv in media_servers:
                 srv_num = srv.get("num", "?")
                 srv_type = srv.get("type")
+                srv_name = srv.get("name")
                 srv_url = srv.get("url", "")
-                srv_label = f'Server {srv_num}'
-                if srv_type:
+                srv_label = srv_name or f'Server {srv_num}'
+                srv_icon = ''
+                if srv_type == "Emby":
+                    srv_icon = '<svg class="srv-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="m97.1 229.4 26.5 26.5L0 379.5l132.4 132.4 26.5-26.5L282.5 609l141.2-141.2-26.5-26.5L512 326.5 379.6 194.1l-26.5 26.5L229.5 97z" style="fill:#52b54b" transform="translate(0 -97)"/><path d="M196.8 351.2v-193L366 254.7 281.4 303z" style="fill:#fff"/></svg> '
+                elif srv_type == "Jellyfin":
+                    srv_icon = '<svg class="srv-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><linearGradient id="jf-a" x1="97.508" x2="522.069" y1="308.135" y2="63.019" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 196.2c-22.4 0-94.8 131.3-83.8 153.4s156.8 21.9 167.7 0-61.3-153.4-83.9-153.4" style="fill:url(#jf-a)"/><linearGradient id="jf-b" x1="94.193" x2="518.754" y1="302.394" y2="57.278" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 0C188.3 0-29.8 395.4 3.4 462.2s472.3 66 505.2 0S323.8 0 256 0m165.6 404.3c-21.6 43.2-309.3 43.8-331.1 0S211.7 101.4 256 101.4 443.2 361 421.6 404.3" style="fill:url(#jf-b)"/></svg> '
+                if not srv_name and srv_type:
                     srv_label += f' ({srv_type})'
                 srv_url_display = _mask_url(srv_url) if mask else srv_url
                 srv_idents = server_identifiers.get(srv_num, [])
@@ -186,7 +217,7 @@ def render_debug_page(debug_state, settings):
                 media_server_cards += (
                     f'<div class="card {srv_class}">'
                     f'<div class="card-header">'
-                    f'<span class="channel-num">{srv_label}</span>'
+                    f'<span class="channel-num">{srv_icon}{srv_label}</span>'
                     f'{srv_badge}'
                     f'</div>'
                     f'<div class="status-desc">{srv_url_display} - {srv_detail}</div>'
@@ -353,15 +384,17 @@ def _debug_html(plugin_name, monitor_badge,
         .card.pending {{ border-left: 4px solid #ff9800; }}
         .card.idle {{ border-left: 4px solid #555; }}
         .card.grace {{ border-left: 4px solid #42a5f5; }}
-        .card.srv-emby {{ border-left: 4px solid #4caf50; }}
-        .card.srv-jellyfin {{ border-left: 4px solid #42a5f5; }}
+        .card.srv-emby {{ border-left: 4px solid #52b54b; }}
+        .card.srv-jellyfin {{ border-left: 4px solid #aa5cc3; }}
         .card.srv-unknown {{ border-left: 4px solid #555; }}
         .card-header {{
             display: flex;
             justify-content: space-between;
             align-items: center;
         }}
-        .channel-num {{ font-weight: 600; font-size: 15px; color: #e0e0e0; }}
+        .channel-num {{ font-weight: 600; font-size: 15px; color: #e0e0e0; display: flex; align-items: center; gap: 6px; }}
+        .srv-icon {{ width: 20px; height: 20px; flex-shrink: 0; }}
+        .srv-icon-sm {{ width: 14px; height: 14px; vertical-align: -2px; flex-shrink: 0; }}
         .channel-name {{ font-weight: 400; color: #707090; font-size: 13px; margin-left: 6px; }}
         .status-desc {{ font-size: 12px; color: #707090; margin-top: 4px; font-style: italic; }}
         .badge {{

@@ -116,21 +116,26 @@ class StreamMonitor:
         return resolved
 
     @staticmethod
-    def _match_client(ip, username, identifiers, resolved_ips):
+    def _match_client(ip, username, identifiers, resolved_ips,
+                      ident_to_server=None, resolved_ip_to_server=None):
         """Check if a client matches any configured identifier.
-        Returns (matched: bool, reason: str)."""
+        Returns (matched: bool, reason: str, server_info: dict or None)."""
         if "all" in identifiers:
-            return True, "ALL (matches every client)"
+            srv = (ident_to_server or {}).get("all")
+            return True, "ALL (matches every client)", srv
         ip_lower = ip.lower()
         uname_lower = username.lower()
         for ident in identifiers:
             if ip_lower == ident:
-                return True, f"IP match ({ident})"
+                srv = (ident_to_server or {}).get(ident)
+                return True, f"IP match ({ident})", srv
             if uname_lower == ident:
-                return True, f"username match ({ident})"
+                srv = (ident_to_server or {}).get(ident)
+                return True, f"username match ({ident})", srv
         if ip in resolved_ips:
-            return True, "hostname resolves to IP"
-        return False, ""
+            srv = (resolved_ip_to_server or {}).get(ip)
+            return True, "hostname resolves to IP", srv
+        return False, "", None
 
     # ── Media server session helpers ─────────────────────────────────────────
 
@@ -169,8 +174,13 @@ class StreamMonitor:
         return servers
 
     @staticmethod
-    def _detect_server_type(url):
-        """Probe /System/Info/Public to determine Emby vs Jellyfin."""
+    def _detect_server_info(url):
+        """Probe /System/Info/Public to determine server type and name.
+
+        Returns ``(type, name)`` where *type* is ``"Emby"`` or
+        ``"Jellyfin"`` and *name* is the configured server name, or
+        ``(None, None)`` on failure.
+        """
         try:
             req = urllib.request.Request(
                 f"{url}/System/Info/Public",
@@ -180,11 +190,12 @@ class StreamMonitor:
                 info = json.loads(resp.read().decode("utf-8"))
                 # Jellyfin includes ProductName; Emby does not
                 product = info.get("ProductName", "")
+                name = info.get("ServerName") or None
                 if "jellyfin" in product.lower():
-                    return "Jellyfin"
-                return "Emby"
+                    return "Jellyfin", name
+                return "Emby", name
         except Exception:
-            return None
+            return None, None
 
     def _fetch_media_server_sessions(self):
         """Fetch active sessions from all configured Emby/Jellyfin servers.
@@ -202,14 +213,16 @@ class StreamMonitor:
         per_server = []
         for idx, (url, api_key, _idents) in enumerate(servers, 1):
             endpoint = f"{url}/Sessions"
-            # Detect server type on first encounter or after error
-            server_type = getattr(self, "_server_types", {}).get(url)
-            if server_type is None:
-                server_type = self._detect_server_type(url)
-                if not hasattr(self, "_server_types"):
-                    self._server_types = {}
+            # Detect server type and name on first encounter or after error
+            cached = getattr(self, "_server_info", {}).get(url)
+            if cached is not None:
+                server_type, server_name = cached
+            else:
+                server_type, server_name = self._detect_server_info(url)
+                if not hasattr(self, "_server_info"):
+                    self._server_info = {}
                 if server_type:
-                    self._server_types[url] = server_type
+                    self._server_info[url] = (server_type, server_name)
             try:
                 req = urllib.request.Request(endpoint, headers={
                     "Accept": "application/json",
@@ -227,11 +240,11 @@ class StreamMonitor:
                         s["_source_url"] = url
                     all_sessions.extend(live)
                     active = len(live)
-                    per_server.append({"num": idx, "url": url, "type": server_type, "active": active, "error": None})
+                    per_server.append({"num": idx, "url": url, "type": server_type, "name": server_name, "active": active, "error": None})
             except Exception as e:
                 errors.append(f"Server {idx}: {e}")
                 logger.warning(f"Failed to fetch media server sessions from server {idx}: {e}")
-                per_server.append({"num": idx, "url": url, "type": server_type, "active": None, "error": str(e)})
+                per_server.append({"num": idx, "url": url, "type": server_type, "name": server_name, "active": None, "error": str(e)})
 
         self._media_server_status = per_server
         self._emby_error = "; ".join(errors) if errors else None
@@ -540,8 +553,9 @@ class StreamMonitor:
         if not servers:
             return
 
-        # Build unified identifier set from all server configs
+        # Build unified identifier set and per-identifier server mapping
         identifiers = set()
+        ident_to_server = {}
         for _url, _key, idents in servers:
             identifiers.update(idents)
         if not identifiers:
@@ -578,6 +592,26 @@ class StreamMonitor:
 
         # Fetch media server sessions early so idle termination can cross-check
         sessions = self._fetch_media_server_sessions()
+
+        # Build ident→server mapping now that _media_server_status is populated
+        for ms in self._media_server_status:
+            ms_url = ms.get("url", "")
+            for _url, _key, idents in servers:
+                if _url == ms_url:
+                    srv_info = {"num": ms["num"], "name": ms.get("name"), "type": ms.get("type")}
+                    for ident in idents:
+                        ident_to_server[ident] = srv_info
+                    break
+        # Map resolved IPs to the server that owns the resolving identifier
+        resolved_ip_to_server = {}
+        for ident, srv_info in ident_to_server.items():
+            try:
+                for info in socket.getaddrinfo(ident, None):
+                    ip = info[4][0]
+                    if ip not in resolved_ip_to_server:
+                        resolved_ip_to_server[ip] = srv_info
+            except (socket.gaierror, OSError):
+                pass
         media_server_channel_numbers = None  # flat set for orphan detection
         # Per-identifier channel sets: {identifier: set(channel_numbers)}
         # Only clients whose IP/hostname matches a server's identifier get pool protection
@@ -685,7 +719,10 @@ class StreamMonitor:
                     last_active_raw = redis_decode(cdata.get(b"last_active") or cdata.get("last_active"))
                     bytes_sent = redis_decode(cdata.get(b"bytes_sent") or cdata.get("bytes_sent"))
 
-                    matched, match_reason = self._match_client(ip, username, identifiers, resolved_ips)
+                    matched, match_reason, match_server = self._match_client(
+                        ip, username, identifiers, resolved_ips,
+                        ident_to_server, resolved_ip_to_server,
+                    )
 
                     # Calculate last_active age
                     try:
@@ -718,6 +755,7 @@ class StreamMonitor:
                         "bytes_sent": bytes_sent,
                         "is_target_match": matched,
                         "match_reason": match_reason,
+                        "match_server": match_server,
                         "idle_seconds": round(idle_seconds, 1) if idle_seconds is not None else None,
                         "in_grace": in_grace,
                         "is_orphan": False,
