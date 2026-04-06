@@ -86,6 +86,44 @@ class Plugin:
                 time.sleep(0.1)
             redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
 
+    def _prune_media_server_settings(self, settings):
+        """Remove media server URL/key settings for servers beyond the current count."""
+        try:
+            from apps.plugins.models import PluginConfig
+            cfg = PluginConfig.objects.get(key=PLUGIN_DB_KEY)
+            count = max(1, int(settings.get("media_server_count", 1)))
+            changed = False
+            # Server 1 uses bare keys (media_server_url, media_server_api_key)
+            # Server N>1 uses suffixed keys (media_server_url_N, media_server_api_key_N)
+            stale_keys = [
+                k for k in list(cfg.settings.keys())
+                if k.startswith("media_server_url_") or k.startswith("media_server_api_key_")
+            ]
+            for k in stale_keys:
+                # Extract the server number from the suffix
+                suffix = k.rsplit("_", 1)[-1]
+                try:
+                    num = int(suffix)
+                except (ValueError, TypeError):
+                    continue
+                if num > count:
+                    del cfg.settings[k]
+                    changed = True
+                    logger.debug(f"Pruned stale setting: {k}")
+            if changed:
+                cfg.save(update_fields=["settings"])
+                # Update the live settings dict so the monitor gets clean values
+                for k in list(settings.keys()):
+                    if k.startswith(("media_server_url_", "media_server_api_key_")):
+                        suffix = k.rsplit("_", 1)[-1]
+                        try:
+                            if int(suffix) > count:
+                                del settings[k]
+                        except (ValueError, TypeError):
+                            pass
+        except Exception as e:
+            logger.debug(f"Could not prune media server settings: {e}")
+
     def run(self, action: str, params: dict, context: dict):
         """Execute a plugin action and return a result dict."""
         logger_ctx = context.get("logger", logger)
@@ -94,6 +132,9 @@ class Plugin:
         # -- restart_monitor ---------------------------------------------------
         if action == "restart_monitor":
             try:
+                # Clean up stale media server keys when count decreases
+                self._prune_media_server_settings(settings)
+
                 # Check if debug server was running before we stop it
                 debug_was_running = False
                 server = get_current_server()
