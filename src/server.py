@@ -601,6 +601,15 @@ class DebugServer:
         idle_seconds = client.get("idle_seconds")
         in_grace = client.get("in_grace", False)
 
+        if mask and match_reason:
+            # Mask identifiers inside parentheses: "IP match (192.168.1.5)" -> "IP match (192.*.*.*)"
+            def _mask_match_reason(m):
+                val = m.group(1)
+                if _IP_RE.fullmatch(val):
+                    return f"({_mask_ip(val)})"
+                return f"({_mask_username(val)})"
+            match_reason = re.sub(r'\(([^)]+)\)', _mask_match_reason, match_reason)
+
         label_html = ""
         if is_match:
             if client.get("is_orphan"):
