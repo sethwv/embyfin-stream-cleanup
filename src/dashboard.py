@@ -87,12 +87,12 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
         elif pool_absent is not None and pool_absent >= timeout:
             label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (absent from pool {int(pool_absent)}s / {timeout}s timeout)</span>'
         elif pool_absent is not None:
-            label_html = f'<span class="match-reason">MONITORED ({match_reason}) - absent from pool {int(pool_absent)}s</span>'
+            label_html = f'<span class="match-reason">MONITORED - {match_reason} - absent from pool {int(pool_absent)}s</span>'
         elif is_idle:
-            label_html = f'<span class="match-reason">MONITORED ({match_reason}) - idle {int(idle_seconds)}s</span>'
+            label_html = f'<span class="match-reason">MONITORED - {match_reason} - idle {int(idle_seconds)}s</span>'
         else:
             row_class = "compliant"
-            label_html = f'<span class="match-reason streaming">SAFE ({match_reason})</span>'
+            label_html = f'<span class="match-reason streaming">SAFE - {match_reason}</span>'
     else:
         label_html = '<span class="unmonitored-label">UNMONITORED</span>'
 
@@ -124,24 +124,6 @@ def render_debug_page(debug_state, settings):
     timeout = debug_state.get("timeout", 30)
     poll_interval = debug_state.get("poll_interval", 10)
     monitor_running = debug_state.get("running", False)
-
-    # Build identifier display from per-server configs
-    all_identifiers = debug_state.get("identifiers", [])
-    identifier_display = ", ".join(all_identifiers).upper() if all_identifiers else "(not configured)"
-    if mask and all_identifiers:
-        identifier_display = ", ".join(
-            _mask_ip(v) if _IP_RE.fullmatch(v) else _mask_username(v)
-            for v in all_identifiers
-        ).upper()
-
-    # Resolved IPs info
-    resolved_ips = debug_state.get("resolved_ips", [])
-    resolved_html = ""
-    if resolved_ips and all_identifiers:
-        if mask:
-            resolved_html = f' &rarr; <span>{", ".join(_mask_ip(ip) for ip in resolved_ips)}</span>'
-        else:
-            resolved_html = f' &rarr; <span>{", ".join(resolved_ips)}</span>'
 
     # Monitor status
     monitor_badge = (
@@ -311,13 +293,13 @@ def render_debug_page(debug_state, settings):
     refresh_interval = min(poll_interval, 5)
 
     return _debug_html(
-        plugin_name, monitor_badge, identifier_display, resolved_html,
+        plugin_name, monitor_badge,
         timeout, poll_interval, scan_ago, channels_html, log_html,
         refresh_interval, emby_html, media_server_cards
     )
 
 
-def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
+def _debug_html(plugin_name, monitor_badge,
                 timeout, poll_interval, scan_ago, channels_html, log_html,
                 refresh_interval, emby_html, media_server_cards):
     return f"""<!DOCTYPE html>
@@ -404,7 +386,7 @@ def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
             padding-top: 10px;
             border-top: 1px solid #2a2a4a;
         }}
-        .section-label.target {{ color: #ffb74d; }}
+        .section-label.target {{ color: #e0e0e0; }}
         .section-label.other {{ color: #707090; }}
         .client-note {{
             font-size: 11px;
@@ -484,7 +466,6 @@ def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
         <h1>Debug {monitor_badge}</h1>
 
         <table class="config-table">
-            <tr><td>Client Identifiers</td><td><span>{identifier_display}</span>{resolved_html}</td></tr>
             <tr><td>Timeout</td><td><span>{timeout}s</span></td></tr>
             <tr><td>Poll Interval</td><td><span>{poll_interval}s</span></td></tr>
             <tr><td>Last Scan</td><td><span>{scan_ago}</span></td></tr>

@@ -142,6 +142,7 @@ class StreamMonitor:
         """
         count = max(1, int(self._settings.get("media_server_count", 1)))
         servers = []
+        seen_idents = set()
         for n in range(1, count + 1):
             suffix = f"_{n}" if n > 1 else ""
             url = (self._settings.get(f"media_server_url{suffix}") or "").strip().rstrip("/")
@@ -154,7 +155,16 @@ class StreamMonitor:
                 key = (self._settings.get("emby_api_key") or "").strip()
             if url and key:
                 idents = {v.strip().lower() for v in ident_raw.split(",") if v.strip()}
+                # Drop identifiers already claimed by a lower-numbered server
+                dupes = idents & seen_idents
+                if dupes:
+                    logger.warning(
+                        f"Server {n}: ignoring duplicate identifier(s) "
+                        f"{', '.join(sorted(dupes))} (already on a lower-numbered server)"
+                    )
+                    idents -= seen_idents
                 if idents:
+                    seen_idents.update(idents)
                     servers.append((url, key, idents))
         return servers
 
