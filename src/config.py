@@ -114,6 +114,7 @@ PLUGIN_FIELDS = [
         "id": "emby_api_key",
         "label": "Emby API Key",
         "type": "string",
+        "input_type": "password",
         "default": "",
         "description": (
             "API key for the Emby server. "
