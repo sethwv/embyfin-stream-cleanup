@@ -17,9 +17,9 @@ DEFAULT_CLEANUP_TIMEOUT: int = 30  # seconds
 DEFAULT_POLL_INTERVAL: int = 10    # seconds
 
 # Key used to look up this plugin's settings in Dispatcharr's PluginConfig
-# table.  Dispatcharr derives the key from the zip folder name, which may be
-# "emby_stream_cleanup" or "emby-stream-cleanup" depending on the build.
-PLUGIN_DB_KEY: str = "emby_stream_cleanup"
+# table.  Dispatcharr derives the key from the zip folder name, which is
+# built from the plugin name in plugin.json (lowercased, spaces to underscores).
+PLUGIN_DB_KEY: str = "embyfin_stream_cleanup"
 
 
 def _load_plugin_config() -> dict:
