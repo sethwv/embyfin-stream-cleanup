@@ -458,6 +458,23 @@ class StreamMonitor:
         scan_result = {}
         active_keys = set()
 
+        # Fetch media server sessions early so idle termination can cross-check
+        sessions = self._fetch_media_server_sessions()
+        media_server_channel_numbers = None
+        if sessions is not None:
+            media_server_channel_numbers = set()
+            for s in sessions:
+                npi = s.get("NowPlayingItem", {})
+                ch_num = npi.get("ChannelNumber")
+                if ch_num:
+                    ch_num = str(ch_num).strip()
+                    try:
+                        num = float(ch_num)
+                        ch_num = str(int(num)) if num == int(num) else ch_num
+                    except (ValueError, TypeError):
+                        pass
+                    media_server_channel_numbers.add(ch_num)
+
         try:
             for key in redis_client.scan_iter(match="channel_stream:*"):
                 key_str = key.decode("utf-8") if isinstance(key, bytes) else key
@@ -576,17 +593,42 @@ class StreamMonitor:
                     }
                     channel_clients.append(client_info)
 
-                    # Track and act on idle matched clients
-                    if matched and idle_seconds is not None:
+                    # Track and act on matched clients
+                    if matched:
                         ck = (channel_uuid, client_id)
                         active_keys.add(ck)
+                        should_terminate = False
+                        reason = ""
 
-                        if idle_seconds >= timeout and not in_grace:
-                            # Client has been idle long enough and channel is
-                            # not mid-failover -- safe to terminate.
+                        if not in_grace:
+                            # Check media server pool (if configured)
+                            if media_server_channel_numbers is not None:
+                                if channel_number not in media_server_channel_numbers:
+                                    # Track how long absent from pool
+                                    if ck not in self._idle_since:
+                                        self._idle_since[ck] = now
+                                        logger.debug(
+                                            f"Client {client_id} on CH {channel_number} "
+                                            f"not in media server pool - tracking"
+                                        )
+                                    else:
+                                        absent_seconds = (now - self._idle_since[ck]).total_seconds()
+                                        if absent_seconds >= timeout:
+                                            should_terminate = True
+                                            reason = (
+                                                f"absent from media server pool "
+                                                f"{absent_seconds:.0f}s >= {timeout}s timeout"
+                                            )
+
+                            # Check idle_seconds (always, regardless of media server)
+                            if not should_terminate and idle_seconds is not None and idle_seconds >= timeout:
+                                should_terminate = True
+                                reason = f"idle {idle_seconds:.0f}s >= {timeout}s timeout"
+
+                        if should_terminate:
                             logger.info(
-                                f"Terminating idle client {client_id} on CH {channel_number} "
-                                f"({channel_name}): idle {idle_seconds:.0f}s >= {timeout}s timeout "
+                                f"Terminating client {client_id} on CH {channel_number} "
+                                f"({channel_name}): {reason} "
                                 f"(ip={ip}, user={username})"
                             )
                             try:
@@ -598,9 +640,8 @@ class StreamMonitor:
                                         "channel": f"CH {channel_number} ({channel_name})",
                                         "ip": ip,
                                         "username": username,
-                                        "idle_seconds": round(idle_seconds),
+                                        "reason": reason,
                                     })
-                                    # Keep log manageable
                                     if len(self._stopped_log) > 20:
                                         self._stopped_log = self._stopped_log[-20:]
                                 else:
@@ -608,15 +649,20 @@ class StreamMonitor:
                             except Exception as e:
                                 logger.error(f"Error stopping client {client_id}: {e}", exc_info=True)
                             self._idle_since.pop(ck, None)
-                        else:
-                            # Track when we first noticed this client idle
-                            if ck not in self._idle_since:
-                                self._idle_since[ck] = now
-                    elif matched:
-                        # Active, clear idle tracking
-                        ck = (channel_uuid, client_id)
-                        active_keys.add(ck)
-                        self._idle_since.pop(ck, None)
+                        elif not in_grace:
+                            # Not terminating - if channel is in pool and not idle, clear tracking
+                            in_pool = (media_server_channel_numbers is not None
+                                       and channel_number in media_server_channel_numbers)
+                            not_idle = (idle_seconds is not None and idle_seconds < timeout)
+                            if in_pool and not_idle:
+                                self._idle_since.pop(ck, None)
+                            elif idle_seconds is None and in_pool:
+                                # No idle data but channel in pool - safe
+                                self._idle_since.pop(ck, None)
+                            elif media_server_channel_numbers is None:
+                                # No media server configured, track idle start
+                                if idle_seconds is not None and ck not in self._idle_since:
+                                    self._idle_since[ck] = now
 
                 if channel_clients:
                     scan_result[channel_uuid] = {
@@ -636,7 +682,6 @@ class StreamMonitor:
             self._idle_since.pop(k, None)
 
         # ── Media server orphan detection ────────────────────────────────
-        sessions = self._fetch_media_server_sessions()
         if sessions is not None:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active

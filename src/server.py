@@ -316,7 +316,7 @@ class DebugServer:
                         f'{entry.get("channel", "?")} '
                         f'<span class="log-detail">ip={log_ip} '
                         f'user={log_user} '
-                        f'idle={entry.get("idle_seconds", "?")}s</span>'
+                        f'{entry.get("reason", "")}</span>'
                         f'</div>'
                     )
 
