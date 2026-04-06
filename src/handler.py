@@ -26,6 +26,11 @@ from .utils import get_redis_client, read_redis_flag, redis_decode
 
 logger = logging.getLogger(__name__)
 
+# ── Feature flags ────────────────────────────────────────────────────────────
+# Set to False to disable idle-based termination while keeping pool-absent
+# and orphan detection active.
+ENABLE_IDLE_TERMINATION = True
+
 # Channel states that indicate the stream is mid-failover or still starting up.
 # Clients appear idle during these states because no data is flowing yet.
 _GRACE_STATES = frozenset({"initializing", "connecting", "buffering", "waiting_for_clients"})
@@ -834,9 +839,15 @@ class StreamMonitor:
                                 pass
 
                             # Check idle_seconds (always, regardless of media server)
-                            if not should_terminate and idle_seconds is not None and idle_seconds >= timeout:
+                            # Use 2x timeout so idle kills are less aggressive
+                            # than pool-absent termination.
+                            idle_threshold = timeout * 2
+                            if (ENABLE_IDLE_TERMINATION
+                                    and not should_terminate
+                                    and idle_seconds is not None
+                                    and idle_seconds >= idle_threshold):
                                 should_terminate = True
-                                reason = f"idle {idle_seconds:.0f}s >= {timeout}s timeout"
+                                reason = f"idle {idle_seconds:.0f}s >= {idle_threshold}s idle timeout"
 
                         if should_terminate:
                             sig_key = f"{channel_uuid}:{client_id}"
@@ -869,7 +880,7 @@ class StreamMonitor:
                             )
                             in_pool = (client_pool_channels is not None
                                        and channel_number in client_pool_channels)
-                            not_idle = (idle_seconds is not None and idle_seconds < timeout)
+                            not_idle = (idle_seconds is not None and idle_seconds < timeout * 2)
                             if in_pool and not_idle:
                                 self._idle_since.pop(ck, None)
                             elif idle_seconds is None and in_pool:
