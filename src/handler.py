@@ -224,13 +224,29 @@ class StreamMonitor:
         return sum(1 for s in sessions
                    if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES)
 
-    def _detect_orphans(self, scan_result, emby_active_count, now, ChannelService):
+    def _detect_orphans(self, scan_result, sessions, now, ChannelService):
         """Compare Dispatcharr matched connections against active media server
-        sessions.  Excess connections (oldest by connected_at) are orphans.
+        sessions by channel number.  Connections on channels the media server
+        is no longer watching are orphan candidates.
 
-        Orphans are confirmed over two consecutive poll cycles before
-        termination to avoid race conditions during channel switches.
+        Orphans must also be idle and are confirmed over multiple poll cycles
+        before termination to avoid race conditions during channel switches.
         """
+        # Build set of channel numbers the media server is actively watching
+        active_channel_numbers = set()
+        for s in (sessions or []):
+            npi = s.get("NowPlayingItem", {})
+            ch_num = npi.get("ChannelNumber")
+            if ch_num:
+                # Normalize: strip leading zeros, trailing .0
+                ch_num = str(ch_num).strip()
+                try:
+                    num = float(ch_num)
+                    ch_num = str(int(num)) if num == int(num) else ch_num
+                except (ValueError, TypeError):
+                    pass
+                active_channel_numbers.add(ch_num)
+
         # Collect all matched clients across all channels (skip grace channels)
         all_matched = []
         for ch_uuid, ch_data in scan_result.items():
@@ -240,48 +256,53 @@ class StreamMonitor:
                 if client.get("is_target_match"):
                     all_matched.append((ch_uuid, ch_data, client))
 
-        total_matched = len(all_matched)
-        if total_matched <= emby_active_count:
-            # No orphans -- clear stale tracking
-            for ch_uuid, _, client in all_matched:
-                self._orphaned_since.pop((ch_uuid, client["client_id"]), None)
+        if not all_matched:
             return
 
-        # More Dispatcharr connections than active media server sessions.
-        num_orphans = total_matched - emby_active_count
-
-        # Sort by connected_at ascending (oldest = most likely orphan)
-        def _connected_sort(item):
-            try:
-                return float(item[2].get("connected_at_raw") or 0)
-            except (ValueError, TypeError):
-                return 0
-
-        all_matched.sort(key=_connected_sort)
-        orphan_candidates = all_matched[:num_orphans]
-        non_orphans = all_matched[num_orphans:]
+        # Determine orphan candidates: clients on channels the media server
+        # is NOT actively watching
+        orphan_candidates = []
+        non_orphans = []
+        for item in all_matched:
+            ch_num = item[1].get("channel_number", "")
+            if ch_num in active_channel_numbers:
+                non_orphans.append(item)
+            else:
+                orphan_candidates.append(item)
 
         # Clear tracking for non-orphans
         for ch_uuid, _, client in non_orphans:
             self._orphaned_since.pop((ch_uuid, client["client_id"]), None)
 
+        if not orphan_candidates:
+            return
+
         poll_interval = max(int(self._settings.get("poll_interval", DEFAULT_POLL_INTERVAL)), 1)
+        # Require orphan candidates to be confirmed across multiple poll cycles
+        confirm_threshold = poll_interval * 2
 
         for ch_uuid, ch_data, client in orphan_candidates:
             ck = (ch_uuid, client["client_id"])
             client["is_orphan"] = True
+
+            # Never terminate a client that is actively receiving data
+            idle = client.get("idle_seconds") or 0
+            if idle < poll_interval:
+                self._orphaned_since.pop(ck, None)
+                continue
 
             if ck not in self._orphaned_since:
                 self._orphaned_since[ck] = now
                 logger.info(
                     f"Potential orphan: client {client['client_id']} on "
                     f"CH {ch_data.get('channel_number', '?')} "
-                    f"(no matching media server session, connected {client.get('connected_duration', '?')})"
+                    f"(no matching media server session, idle {idle:.0f}s, "
+                    f"connected {client.get('connected_duration', '?')})"
                 )
                 continue
 
             orphan_age = now - self._orphaned_since[ck]
-            if orphan_age < poll_interval:
+            if orphan_age < confirm_threshold:
                 continue  # not yet confirmed
 
             channel_number = ch_data.get("channel_number", "?")
@@ -619,7 +640,7 @@ class StreamMonitor:
         if sessions is not None:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active
-            self._detect_orphans(scan_result, emby_active, now, ChannelService)
+            self._detect_orphans(scan_result, sessions, now, ChannelService)
         elif self._get_media_server_configs():
             # Configured but fetch failed -- keep last count, don't orphan-kill
             pass
