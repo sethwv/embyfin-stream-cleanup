@@ -30,6 +30,10 @@ logger = logging.getLogger(__name__)
 # Clients appear idle during these states because no data is flowing yet.
 _GRACE_STATES = frozenset({"initializing", "connecting", "buffering", "waiting_for_clients"})
 
+# NowPlayingItem.Type values that indicate a live TV stream.
+# Emby uses "TvChannel"; Jellyfin may use either "TvChannel" or "LiveTvChannel".
+_LIVE_TV_TYPES = frozenset({"TvChannel", "LiveTvChannel"})
+
 
 def _get_failover_grace():
     """Return the failover grace period (seconds) from Dispatcharr proxy config.
@@ -87,6 +91,7 @@ class StreamMonitor:
         # Media server session state (updated each poll cycle)
         self._emby_active_count = None  # None=not configured, int=session count
         self._emby_error = None  # last error message, if any
+        self._media_server_status = []  # per-server status dicts for debug page
 
     # ── Identifier helpers ───────────────────────────────────────────────────
 
@@ -153,31 +158,45 @@ class StreamMonitor:
         """
         servers = self._get_media_server_configs()
         if not servers:
+            self._media_server_status = []
             return None
 
         all_sessions = []
         errors = []
+        per_server = []
         for url, api_key in servers:
-            endpoint = f"{url}/Sessions?api_key={api_key}"
+            endpoint = f"{url}/Sessions"
             try:
-                req = urllib.request.Request(endpoint, headers={"Accept": "application/json"})
+                req = urllib.request.Request(endpoint, headers={
+                    "Accept": "application/json",
+                    # Emby accepts ?api_key; Jellyfin accepts X-Emby-Token header.
+                    # Sending both ensures compatibility with either server.
+                    "X-Emby-Token": api_key,
+                })
                 with urllib.request.urlopen(req, timeout=5) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                    if isinstance(data, list):
-                        all_sessions.extend(data)
+                    sessions = data if isinstance(data, list) else []
+                    live = [s for s in sessions
+                            if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES]
+                    all_sessions.extend(live)
+                    active = len(live)
+                    per_server.append({"url": url, "active": active, "error": None})
             except Exception as e:
                 errors.append(f"{url}: {e}")
                 logger.warning(f"Failed to fetch media server sessions from {url}: {e}")
+                per_server.append({"url": url, "active": None, "error": str(e)})
 
+        self._media_server_status = per_server
         self._emby_error = "; ".join(errors) if errors else None
         return all_sessions
 
     @staticmethod
     def _count_active_streams(sessions):
-        """Count sessions with an active NowPlayingItem."""
+        """Count live TV sessions with an active NowPlayingItem."""
         if not sessions:
             return 0
-        return sum(1 for s in sessions if s.get("NowPlayingItem"))
+        return sum(1 for s in sessions
+                   if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES)
 
     def _detect_orphans(self, scan_result, emby_active_count, now, ChannelService):
         """Compare Dispatcharr matched connections against active media server
@@ -611,4 +630,5 @@ class StreamMonitor:
             "emby_configured": bool(self._get_media_server_configs()),
             "emby_active_count": self._emby_active_count,
             "emby_error": self._emby_error,
+            "media_servers": list(self._media_server_status),
         }

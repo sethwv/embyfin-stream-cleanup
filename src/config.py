@@ -125,13 +125,6 @@ _FIELDS_AFTER_SERVERS = [
         "description": "Start an HTTP server for the debug dashboard (optional)",
     },
     {
-        "id": "suppress_access_logs",
-        "label": "Suppress Access Logs",
-        "type": "boolean",
-        "default": True,
-        "description": "Suppress HTTP access logs for the debug server",
-    },
-    {
         "id": "port",
         "label": "Debug Server Port",
         "type": "number",

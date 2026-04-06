@@ -1,7 +1,7 @@
 {
-  "name": "Emby Stream Cleanup",
+  "name": "Embyfin Stream Cleanup",
   "version": "-dev-d5481452-20260402095022",
-  "description": "Monitors Dispatcharr client activity and terminates idle Emby connections",
+  "description": "Monitors Dispatcharr client activity and terminates idle Emby/Jellyfin connections",
   "license": "MIT",
   "author": "sethwv",
   "min_dispatcharr_version": "v0.22.0",

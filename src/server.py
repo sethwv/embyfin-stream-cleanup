@@ -128,14 +128,45 @@ class DebugServer:
             emby_configured = debug_state.get("emby_configured", False)
             emby_active_count = debug_state.get("emby_active_count")
             emby_error = debug_state.get("emby_error")
+            media_servers = debug_state.get("media_servers", [])
             emby_html = ""
+            media_server_cards = ""
             if emby_configured:
                 if emby_error:
-                    emby_html = f'<tr><td>Media Server</td><td><span class="warn">Error: {emby_error}</span></td></tr>'
+                    emby_html = f'<tr><td>Media Server Pool</td><td><span class="warn">Error (see below)</span></td></tr>'
                 elif emby_active_count is not None:
-                    emby_html = f'<tr><td>Media Server</td><td><span>{emby_active_count} active session(s)</span></td></tr>'
+                    emby_html = f'<tr><td>Media Server Pool</td><td><span>{emby_active_count} active session(s)</span></td></tr>'
                 else:
-                    emby_html = '<tr><td>Media Server</td><td><span>Connecting...</span></td></tr>'
+                    emby_html = '<tr><td>Media Server Pool</td><td><span>Connecting...</span></td></tr>'
+
+                # Build per-server cards
+                if media_servers:
+                    media_server_cards = '<h2>Media Servers</h2>'
+                    for srv in media_servers:
+                        srv_url = srv.get("url", "?")
+                        srv_active = srv.get("active")
+                        srv_error = srv.get("error")
+                        if srv_error:
+                            srv_class = "pending"
+                            srv_badge = '<span class="badge pending">Error</span>'
+                            srv_detail = f'<span class="warn">{srv_error}</span>'
+                        elif srv_active is not None:
+                            srv_class = "active"
+                            srv_badge = f'<span class="badge active">{srv_active} session(s)</span>'
+                            srv_detail = f'{srv_active} active stream(s) detected'
+                        else:
+                            srv_class = "idle"
+                            srv_badge = '<span class="badge idle">Connecting</span>'
+                            srv_detail = 'Waiting for first poll...'
+                        media_server_cards += (
+                            f'<div class="card {srv_class}">'
+                            f'<div class="card-header">'
+                            f'<span class="channel-num">{srv_url}</span>'
+                            f'{srv_badge}'
+                            f'</div>'
+                            f'<div class="status-desc">{srv_detail}</div>'
+                            f'</div>'
+                        )
 
             # Build channel cards from last scan
             scan = debug_state.get("scan", {})
@@ -235,7 +266,7 @@ class DebugServer:
             html = self._debug_html(
                 plugin_name, monitor_badge, identifier_display, resolved_html,
                 timeout, poll_interval, scan_ago, channels_html, log_html,
-                refresh_interval, emby_html
+                refresh_interval, emby_html, media_server_cards
             )
 
             start_response('200 OK', [('Content-Type', 'text/html; charset=utf-8')])
@@ -248,7 +279,7 @@ class DebugServer:
     @staticmethod
     def _debug_html(plugin_name, monitor_badge, identifier_display, resolved_html,
                     timeout, poll_interval, scan_ago, channels_html, log_html,
-                    refresh_interval, emby_html):
+                    refresh_interval, emby_html, media_server_cards):
         return f"""<!DOCTYPE html>
 <html>
 <head>
@@ -420,6 +451,8 @@ class DebugServer:
             Non-matching clients are <strong>never</strong> affected.
         </div>
 
+        {media_server_cards}
+
         <h2>Active Channels</h2>
         {channels_html}
         {log_html}
@@ -579,13 +612,11 @@ class DebugServer:
 
             def run_server():
                 try:
-                    suppress_logs = self.settings.get('suppress_access_logs', True)
                     server_kwargs = {
                         'listener': (self.host, self.port),
                         'application': self.wsgi_app,
+                        'log': None,
                     }
-                    if suppress_logs:
-                        server_kwargs['log'] = None
 
                     self.server = pywsgi.WSGIServer(**server_kwargs)
                     self.running = True
