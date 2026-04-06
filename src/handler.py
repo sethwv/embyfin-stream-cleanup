@@ -612,7 +612,7 @@ class StreamMonitor:
                                             f"not in media server pool - tracking"
                                         )
                                     else:
-                                        absent_seconds = (now - self._idle_since[ck]).total_seconds()
+                                        absent_seconds = now - self._idle_since[ck]
                                         if absent_seconds >= timeout:
                                             should_terminate = True
                                             reason = (
