@@ -117,7 +117,7 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
             label_html = f'<span class="match-reason">MONITORED - {srv_badge}{match_reason} - idle {int(idle_seconds)}s</span>'
         else:
             row_class = "compliant"
-            label_html = f'<span class="match-reason streaming">SAFE - {srv_badge}{match_reason}</span>'
+            label_html = f'<span class="match-reason streaming">{srv_badge}{match_reason}</span>'
     else:
         label_html = '<span class="unmonitored-label">UNMONITORED</span>'
 
@@ -394,7 +394,7 @@ def _debug_html(plugin_name, monitor_badge,
         }}
         .channel-num {{ font-weight: 600; font-size: 15px; color: #e0e0e0; display: flex; align-items: center; gap: 6px; }}
         .srv-icon {{ width: 20px; height: 20px; flex-shrink: 0; }}
-        .srv-icon-sm {{ width: 14px; height: 14px; vertical-align: -2px; flex-shrink: 0; }}
+        .srv-icon-sm {{ width: 12px; height: 12px; vertical-align: -1px; flex-shrink: 0; }}
         .channel-name {{ font-weight: 400; color: #707090; font-size: 13px; margin-left: 6px; }}
         .status-desc {{ font-size: 12px; color: #707090; margin-top: 4px; font-style: italic; }}
         .badge {{
