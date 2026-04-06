@@ -47,10 +47,85 @@ def _mask_username(username):
     return username[0] + "***" + username[-1]
 
 
-# ── Inline SVG icons (small, for match labels) ─────────────────────────────
+# ── Server type registry ────────────────────────────────────────────────────
+# Each instance defines visual attributes for a media server type.
+# To add a new server type, add an instance here — everything else adapts.
 
-_EMBY_ICON_SM = '<svg class="srv-icon-sm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="m97.1 229.4 26.5 26.5L0 379.5l132.4 132.4 26.5-26.5L282.5 609l141.2-141.2-26.5-26.5L512 326.5 379.6 194.1l-26.5 26.5L229.5 97z" style="fill:#52b54b" transform="translate(0 -97)"/><path d="M196.8 351.2v-193L366 254.7 281.4 303z" style="fill:#fff"/></svg>'
-_JELLYFIN_ICON_SM = '<svg class="srv-icon-sm" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><linearGradient id="jfl-a" x1="97.508" x2="522.069" y1="308.135" y2="63.019" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 196.2c-22.4 0-94.8 131.3-83.8 153.4s156.8 21.9 167.7 0-61.3-153.4-83.9-153.4" style="fill:url(#jfl-a)"/><linearGradient id="jfl-b" x1="94.193" x2="518.754" y1="302.394" y2="57.278" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 0C188.3 0-29.8 395.4 3.4 462.2s472.3 66 505.2 0S323.8 0 256 0m165.6 404.3c-21.6 43.2-309.3 43.8-331.1 0S211.7 101.4 256 101.4 443.2 361 421.6 404.3" style="fill:url(#jfl-b)"/></svg>'
+
+def _svg(inner, css_class, suffix=""):
+    """Wrap SVG inner content in a sized <svg> element."""
+    return (
+        f'<svg class="{css_class}" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">'
+        f'{inner.format(suffix=suffix)}</svg>'
+    )
+
+
+class ServerType:
+    """Visual attributes for a media server type."""
+
+    def __init__(self, color, css_class, icon_paths=""):
+        self.color = color
+        self.css_class = css_class
+        self._icon_paths = icon_paths
+
+    @property
+    def icon_lg(self):
+        if not self._icon_paths:
+            return ""
+        return _svg(self._icon_paths, "srv-icon", suffix="l") + " "
+
+    @property
+    def icon_sm(self):
+        if not self._icon_paths:
+            return ""
+        return _svg(self._icon_paths, "srv-icon-sm", suffix="s")
+
+
+EMBY = ServerType(
+    color="#52b54b",
+    css_class="srv-emby",
+    icon_paths=(
+        '<path d="m97.1 229.4 26.5 26.5L0 379.5l132.4 132.4 26.5-26.5L282.5 609l141.2-141.2'
+        '-26.5-26.5L512 326.5 379.6 194.1l-26.5 26.5L229.5 97z" style="fill:#52b54b" '
+        'transform="translate(0 -97)"/>'
+        '<path d="M196.8 351.2v-193L366 254.7 281.4 303z" style="fill:#fff"/>'
+    ),
+)
+
+JELLYFIN = ServerType(
+    color="#aa5cc3",
+    css_class="srv-jellyfin",
+    icon_paths=(
+        '<linearGradient id="jf{suffix}-a" x1="97.508" x2="522.069" y1="308.135" y2="63.019" '
+        'gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/>'
+        '</linearGradient>'
+        '<path d="M256 196.2c-22.4 0-94.8 131.3-83.8 153.4s156.8 21.9 167.7 0-61.3-153.4-83.9-153.4" '
+        'style="fill:url(#jf{suffix}-a)"/>'
+        '<linearGradient id="jf{suffix}-b" x1="94.193" x2="518.754" y1="302.394" y2="57.278" '
+        'gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse">'
+        '<stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/>'
+        '</linearGradient>'
+        '<path d="M256 0C188.3 0-29.8 395.4 3.4 462.2s472.3 66 505.2 0S323.8 0 256 0m165.6 404.3'
+        'c-21.6 43.2-309.3 43.8-331.1 0S211.7 101.4 256 101.4 443.2 361 421.6 404.3" '
+        'style="fill:url(#jf{suffix}-b)"/>'
+    ),
+)
+
+UNKNOWN = ServerType(
+    color="#888",
+    css_class="srv-unknown",
+)
+
+SERVER_TYPES = {
+    "Emby": EMBY,
+    "Jellyfin": JELLYFIN,
+}
+
+
+def _get_server_type(type_name):
+    """Look up server type by name, falling back to UNKNOWN."""
+    return SERVER_TYPES.get(type_name, UNKNOWN)
 
 
 def _server_badge(match_server):
@@ -61,13 +136,10 @@ def _server_badge(match_server):
     srv_name = match_server.get("name")
     if not srv_name and not srv_type:
         return ""
-    icon = ""
-    if srv_type == "Emby":
-        icon = _EMBY_ICON_SM + " "
-    elif srv_type == "Jellyfin":
-        icon = _JELLYFIN_ICON_SM + " "
+    st = _get_server_type(srv_type)
+    icon = (st.icon_sm + " ") if st.icon_sm else ""
     label = srv_name or srv_type
-    return f'{icon}{label} - '
+    return f'{icon}<span style="color:{st.color}">{label}</span> - '
 
 
 # ── Client row rendering ────────────────────────────────────────────────────
@@ -180,12 +252,9 @@ def render_debug_page(debug_state, settings):
                 srv_type = srv.get("type")
                 srv_name = srv.get("name")
                 srv_url = srv.get("url", "")
+                st = _get_server_type(srv_type)
                 srv_label = srv_name or f'Server {srv_num}'
-                srv_icon = ''
-                if srv_type == "Emby":
-                    srv_icon = '<svg class="srv-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><path d="m97.1 229.4 26.5 26.5L0 379.5l132.4 132.4 26.5-26.5L282.5 609l141.2-141.2-26.5-26.5L512 326.5 379.6 194.1l-26.5 26.5L229.5 97z" style="fill:#52b54b" transform="translate(0 -97)"/><path d="M196.8 351.2v-193L366 254.7 281.4 303z" style="fill:#fff"/></svg> '
-                elif srv_type == "Jellyfin":
-                    srv_icon = '<svg class="srv-icon" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><linearGradient id="jf-a" x1="97.508" x2="522.069" y1="308.135" y2="63.019" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 196.2c-22.4 0-94.8 131.3-83.8 153.4s156.8 21.9 167.7 0-61.3-153.4-83.9-153.4" style="fill:url(#jf-a)"/><linearGradient id="jf-b" x1="94.193" x2="518.754" y1="302.394" y2="57.278" gradientTransform="matrix(1 0 0 -1 0 514)" gradientUnits="userSpaceOnUse"><stop offset="0" style="stop-color:#aa5cc3"/><stop offset="1" style="stop-color:#00a4dc"/></linearGradient><path d="M256 0C188.3 0-29.8 395.4 3.4 462.2s472.3 66 505.2 0S323.8 0 256 0m165.6 404.3c-21.6 43.2-309.3 43.8-331.1 0S211.7 101.4 256 101.4 443.2 361 421.6 404.3" style="fill:url(#jf-b)"/></svg> '
+                srv_icon = st.icon_lg
                 if not srv_name and srv_type:
                     srv_label += f' ({srv_type})'
                 srv_url_display = _mask_url(srv_url) if mask else srv_url
@@ -202,12 +271,7 @@ def render_debug_page(debug_state, settings):
                     err_display = _mask_url(srv_error) if mask else srv_error
                     srv_detail = f'<span class="warn">{err_display}</span>'
                 elif srv_active is not None:
-                    if srv_type == "Jellyfin":
-                        srv_class = "srv-jellyfin"
-                    elif srv_type == "Emby":
-                        srv_class = "srv-emby"
-                    else:
-                        srv_class = "srv-unknown"
+                    srv_class = st.css_class
                     srv_badge = f'<span class="badge active">{srv_active} session(s)</span>'
                     srv_detail = f'{srv_active} active stream(s) detected'
                 else:
