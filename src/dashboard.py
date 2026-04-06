@@ -394,7 +394,7 @@ def _debug_html(plugin_name, monitor_badge,
         }}
         .channel-num {{ font-weight: 600; font-size: 15px; color: #e0e0e0; display: flex; align-items: center; gap: 6px; }}
         .srv-icon {{ width: 20px; height: 20px; flex-shrink: 0; }}
-        .srv-icon-sm {{ width: 12px; height: 12px; vertical-align: -1px; flex-shrink: 0; }}
+        .srv-icon-sm {{ width: 10px; height: 10px; vertical-align: -1px; flex-shrink: 0; }}
         .channel-name {{ font-weight: 400; color: #707090; font-size: 13px; margin-left: 6px; }}
         .status-desc {{ font-size: 12px; color: #707090; margin-top: 4px; font-style: italic; }}
         .badge {{

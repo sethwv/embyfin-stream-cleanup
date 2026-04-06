@@ -283,6 +283,34 @@ class StreamMonitor:
             logger.error(f"Error setting stop signal for {client_id}: {e}")
             return False
 
+    @staticmethod
+    def _pool_channels_for_client(ip, username, pool_channels_by_ident):
+        """Find the pool channel set that covers this client.
+
+        Checks the client's IP, username (lowercased), and resolved hostname
+        against the ``pool_channels_by_ident`` mapping which is keyed by
+        identifier strings (IPs, usernames, hostnames).
+
+        Returns the matching channel set, or ``None`` if no identifier matches.
+        """
+        if not pool_channels_by_ident:
+            return None
+        ip_lower = ip.lower()
+        uname_lower = (username or "").lower()
+        if ip_lower in pool_channels_by_ident:
+            return pool_channels_by_ident[ip_lower]
+        if uname_lower and uname_lower in pool_channels_by_ident:
+            return pool_channels_by_ident[uname_lower]
+        # Check if client IP matches a resolved hostname identifier
+        for ident, ch_set in pool_channels_by_ident.items():
+            try:
+                for info in socket.getaddrinfo(ident, None):
+                    if info[4][0] == ip_lower:
+                        return ch_set
+            except (socket.gaierror, OSError):
+                pass
+        return None
+
     def _detect_orphans(self, scan_result, sessions, now, pool_channels_by_ident=None, redis_client=None):
         """Compare Dispatcharr matched connections against active media server
         sessions by channel number.  Connections on channels the media server
@@ -325,15 +353,19 @@ class StreamMonitor:
         non_orphans = []
         for item in all_matched:
             ch_num = item[1].get("channel_number", "")
-            client_ip = (item[2].get("ip") or "").lower()
+            client_ip = (item[2].get("ip") or "")
+            client_uname = (item[2].get("username") or "")
 
-            # Use per-IP pool if available for this client
-            if pool_channels_by_ident and client_ip in pool_channels_by_ident:
-                client_channels = pool_channels_by_ident[client_ip]
-            elif pool_channels_by_ident:
-                # Client IP doesn't match any configured server -- not covered
-                # by pool, so it's a potential orphan by definition
-                client_channels = set()
+            # Find pool channels for this client by checking which identifier
+            # it matched against (could be IP, username, or resolved hostname)
+            if pool_channels_by_ident:
+                client_channels = self._pool_channels_for_client(
+                    client_ip, client_uname, pool_channels_by_ident
+                )
+                if client_channels is None:
+                    # Client doesn't match any configured server identifier —
+                    # not covered by pool, so it's a potential orphan
+                    client_channels = set()
             else:
                 client_channels = active_channel_numbers
 
@@ -774,7 +806,9 @@ class StreamMonitor:
                             # Check media server pool (if configured)
                             # Only apply pool protection if this client's
                             # identifier matches a configured media server
-                            client_pool_channels = pool_channels_by_ident.get(ip.lower()) if pool_channels_by_ident else None
+                            client_pool_channels = self._pool_channels_for_client(
+                                ip, username, pool_channels_by_ident
+                            )
                             if client_pool_channels is not None:
                                 if channel_number not in client_pool_channels:
                                     # Track how long absent from this client's server pool
@@ -830,7 +864,9 @@ class StreamMonitor:
                                 self._stop_logged.add(sig_key)
                         elif not in_grace:
                             # Not terminating - check if tracking should be cleared
-                            client_pool_channels = pool_channels_by_ident.get(ip.lower()) if pool_channels_by_ident else None
+                            client_pool_channels = self._pool_channels_for_client(
+                                ip, username, pool_channels_by_ident
+                            )
                             in_pool = (client_pool_channels is not None
                                        and channel_number in client_pool_channels)
                             not_idle = (idle_seconds is not None and idle_seconds < timeout)
