@@ -10,6 +10,7 @@ Routes:
 """
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -26,6 +27,45 @@ logger = logging.getLogger(__name__)
 
 # Module-level reference to the currently running server instance (per process).
 _debug_server = None
+
+
+# ── Masking helpers ──────────────────────────────────────────────────────────
+
+_IP_RE = re.compile(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+
+
+def _mask_ip(ip):
+    """Mask an IP address, keeping the first octet: 192.168.1.50 → 192.*.*.*"""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.*.*.*"
+    return "***"
+
+
+def _mask_url(url):
+    """Mask the host portion of a URL: http://192.168.1.50:8096 → http://192.*.*.*:8096"""
+    if not url or url == "?":
+        return url
+    # Handle http(s)://host(:port)/path
+    m = re.match(r'(https?://)(.+?)(\:\d+)?(/.*)?\s*$', url, re.IGNORECASE)
+    if m:
+        scheme, host, port, path = m.group(1), m.group(2), m.group(3) or "", m.group(4) or ""
+        if _IP_RE.fullmatch(host):
+            host = _mask_ip(host)
+        else:
+            # hostname: keep TLD, mask rest
+            host = "***"
+        return f"{scheme}{host}{port}{path}"
+    return "***"
+
+
+def _mask_username(username):
+    """Mask a username: alice → a***e, ab → a*"""
+    if not username:
+        return username
+    if len(username) <= 2:
+        return username[0] + "*"
+    return username[0] + "***" + username[-1]
 
 
 def get_current_server():
