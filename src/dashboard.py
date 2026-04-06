@@ -49,7 +49,7 @@ def _mask_username(username):
 
 # ── Server type registry ────────────────────────────────────────────────────
 # Each instance defines visual attributes for a media server type.
-# To add a new server type, add an instance here — everything else adapts.
+# To add a new server type, add an instance here. Everything else adapts.
 
 
 def _svg(inner, css_class, suffix=""):
@@ -159,7 +159,7 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
     idle_seconds = client.get("idle_seconds")
     in_grace = client.get("in_grace", False)
     # Don't consider a client idle unless it has been inactive
-    # longer than the poll interval — anything below that is just
+    # longer than the poll interval; anything below that is just
     # normal jitter between data chunks.
     is_idle = idle_seconds is not None and idle_seconds >= poll_interval
 

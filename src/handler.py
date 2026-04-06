@@ -368,7 +368,7 @@ class StreamMonitor:
                     client_ip, client_uname, pool_channels_by_ident
                 )
                 if client_channels is None:
-                    # Client doesn't match any configured server identifier —
+                    # Client doesn't match any configured server identifier,
                     # not covered by pool, so it's a potential orphan
                     client_channels = set()
             else:

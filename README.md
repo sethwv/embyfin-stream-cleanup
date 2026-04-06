@@ -44,9 +44,9 @@ Check Dispatcharr's active connections while your media server is streaming. The
 
 ## Plugin Actions
 
-- **Restart Monitor** — Apply config changes (restarts monitor and debug server)
-- **Check Status** — Show whether the monitor and debug server are running
-- **Reset All Settings** — Wipe all saved settings and Redis keys
+- **Restart Monitor** - Apply config changes (restarts monitor and debug server)
+- **Check Status** - Show whether the monitor and debug server are running
+- **Reset All Settings** - Wipe all saved settings and Redis keys
 
 ## Debug Dashboard
 
@@ -63,7 +63,7 @@ No. Pool protection is channel-based, not count-based. As long as the media serv
 **What if the same identifier is configured on multiple servers?**
 The lower-numbered server wins. Duplicate identifiers on higher-numbered servers are ignored (with a warning in the logs).
 
-**A connection was terminated but the media server reconnects immediately — won't it loop?**
+**A connection was terminated but the media server reconnects immediately - won't it loop?**
 The plugin uses a signal-only approach. It sets a Redis key that tells Dispatcharr's stream generator to close the connection on its next chunk. If the media server reconnects, it gets a fresh connection with a new client ID. If it's still in the session pool, the new connection will be left alone.
 
 **What if my media server uses a hostname instead of an IP?**

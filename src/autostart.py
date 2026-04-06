@@ -90,7 +90,7 @@ def _autostart_worker(monitor) -> None:
         if _rc:
             _dedup_key = REDIS_KEY_LEADER + ":autostart_dedup"
             if not _rc.set(_dedup_key, "1", nx=True, ex=(_RETRY_DELAY * _MAX_ATTEMPTS) + 30):
-                # Key exists — but if nothing is actually running or leading,
+                # Key exists, but if nothing is actually running or leading,
                 # it's stale from a previous lifecycle.  Clear and proceed.
                 if not _rc.get(REDIS_KEY_MONITOR) and not _rc.get(REDIS_KEY_LEADER):
                     logger.debug("Emby stream cleanup: stale autostart_dedup key, clearing")
@@ -100,7 +100,7 @@ def _autostart_worker(monitor) -> None:
                     logger.debug("Emby stream cleanup: auto-start already in progress (Redis dedup), skipping")
                     return
     except Exception:
-        pass  # Redis not available yet — proceed, leader election will gate us
+        pass  # Redis not available yet, leader election will gate us
 
     # Try both key forms (underscore and hyphen)
     _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
@@ -108,7 +108,7 @@ def _autostart_worker(monitor) -> None:
     settings_dict: dict = {}
 
     for attempt in range(_MAX_ATTEMPTS):
-        # First iteration has no sleep — _STARTUP_WAIT already elapsed above.
+        # First iteration has no sleep since _STARTUP_WAIT already elapsed above.
         if attempt > 0:
             time.sleep(_RETRY_DELAY)
         try:
