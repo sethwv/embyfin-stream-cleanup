@@ -153,7 +153,8 @@ class StreamMonitor:
                 key = (self._settings.get("emby_api_key") or "").strip()
             if url and key:
                 idents = {v.strip().lower() for v in ident_raw.split(",") if v.strip()}
-                servers.append((url, key, idents))
+                if idents:
+                    servers.append((url, key, idents))
         return servers
 
     @staticmethod
@@ -368,6 +369,20 @@ class StreamMonitor:
             return False
 
         self._settings = settings or {}
+
+        # Prune stale media server keys from in-memory settings
+        count = max(1, int(self._settings.get("media_server_count", 1)))
+        stale = [k for k in list(self._settings.keys())
+                 if k.startswith(("media_server_url_", "media_server_api_key_", "media_server_identifier_"))]
+        for k in stale:
+            suffix = k.rsplit("_", 1)[-1]
+            try:
+                if int(suffix) > count:
+                    del self._settings[k]
+                    logger.debug(f"Pruned stale setting from live config: {k}")
+            except (ValueError, TypeError):
+                pass
+
         self._running = True
         self._idle_since.clear()
         self._orphaned_since.clear()
@@ -451,13 +466,9 @@ class StreamMonitor:
         if not servers:
             return
 
-        configured_servers = [(url, key, idents) for url, key, idents in servers if idents]
-        if not configured_servers:
-            return
-
         # Build unified identifier set from all server configs
         identifiers = set()
-        for _url, _key, idents in configured_servers:
+        for _url, _key, idents in servers:
             identifiers.update(idents)
         if not identifiers:
             return
