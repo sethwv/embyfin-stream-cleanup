@@ -16,6 +16,7 @@ import threading
 import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 from .config import (
     DEFAULT_CLEANUP_TIMEOUT, DEFAULT_POLL_INTERVAL,
@@ -204,6 +205,9 @@ class StreamMonitor:
                     sessions = data if isinstance(data, list) else []
                     live = [s for s in sessions
                             if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES]
+                    # Tag each session with its source server URL for per-IP pool mapping
+                    for s in live:
+                        s["_source_url"] = url
                     all_sessions.extend(live)
                     active = len(live)
                     per_server.append({"num": idx, "url": url, "type": server_type, "active": active, "error": None})
@@ -224,21 +228,23 @@ class StreamMonitor:
         return sum(1 for s in sessions
                    if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES)
 
-    def _detect_orphans(self, scan_result, sessions, now, ChannelService):
+    def _detect_orphans(self, scan_result, sessions, now, ChannelService, pool_channels_by_ip=None):
         """Compare Dispatcharr matched connections against active media server
         sessions by channel number.  Connections on channels the media server
         is no longer watching are orphan candidates.
 
+        When ``pool_channels_by_ip`` is provided, only channels from the
+        client's own media server are considered (per-IP pool protection).
+
         Orphans must also be idle and are confirmed over multiple poll cycles
         before termination to avoid race conditions during channel switches.
         """
-        # Build set of channel numbers the media server is actively watching
+        # Build flat set of channel numbers (fallback when no per-IP mapping)
         active_channel_numbers = set()
         for s in (sessions or []):
             npi = s.get("NowPlayingItem", {})
             ch_num = npi.get("ChannelNumber")
             if ch_num:
-                # Normalize: strip leading zeros, trailing .0
                 ch_num = str(ch_num).strip()
                 try:
                     num = float(ch_num)
@@ -259,13 +265,24 @@ class StreamMonitor:
         if not all_matched:
             return
 
-        # Determine orphan candidates: clients on channels the media server
-        # is NOT actively watching
+        # Determine orphan candidates per client
         orphan_candidates = []
         non_orphans = []
         for item in all_matched:
             ch_num = item[1].get("channel_number", "")
-            if ch_num in active_channel_numbers:
+            client_ip = (item[2].get("ip") or "").lower()
+
+            # Use per-IP pool if available for this client
+            if pool_channels_by_ip and client_ip in pool_channels_by_ip:
+                client_channels = pool_channels_by_ip[client_ip]
+            elif pool_channels_by_ip:
+                # Client IP doesn't match any configured server -- not covered
+                # by pool, so it's a potential orphan by definition
+                client_channels = set()
+            else:
+                client_channels = active_channel_numbers
+
+            if ch_num in client_channels:
                 non_orphans.append(item)
             else:
                 orphan_candidates.append(item)
@@ -316,13 +333,16 @@ class StreamMonitor:
             try:
                 result = ChannelService.stop_client(ch_uuid, client["client_id"])
                 if result.get("status") == "success":
-                    logger.info(f"Successfully terminated orphaned client {client['client_id']}")
+                    locally = result.get("locally_processed", False)
+                    if locally:
+                        logger.info(f"Orphaned client {client['client_id']} stopped locally")
+                    else:
+                        logger.debug(f"Stop request queued for orphaned client {client['client_id']} (remote worker)")
                     self._stopped_log.append({
                         "time": now,
                         "channel": f"CH {channel_number} ({channel_name})",
                         "ip": client.get("ip", ""),
                         "username": client.get("username", ""),
-                        "idle_seconds": round(client.get("idle_seconds") or 0),
                         "reason": "orphan",
                     })
                     if len(self._stopped_log) > 20:
@@ -331,7 +351,8 @@ class StreamMonitor:
                     logger.warning(f"stop_client returned: {result}")
             except Exception as e:
                 logger.error(f"Error stopping orphaned client: {e}", exc_info=True)
-            self._orphaned_since.pop(ck, None)
+            # Do NOT clear _orphaned_since -- keep retrying until client
+            # actually disappears from scan (stale prune handles cleanup)
 
     # ── Lifecycle ────────────────────────────────────────────────────────────
 
@@ -460,9 +481,32 @@ class StreamMonitor:
 
         # Fetch media server sessions early so idle termination can cross-check
         sessions = self._fetch_media_server_sessions()
-        media_server_channel_numbers = None
+        media_server_channel_numbers = None  # flat set for orphan detection
+        # Per-server-IP channel sets: {resolved_ip: set(channel_numbers)}
+        # Only clients whose IP matches a configured server get pool protection
+        pool_channels_by_ip = {}
         if sessions is not None:
             media_server_channel_numbers = set()
+            servers = self._get_media_server_configs()
+            # Build a mapping of server hostname IPs → session channel numbers
+            server_ips = {}
+            for url, _key in servers:
+                try:
+                    hostname = urlparse(url).hostname or ""
+                    # Resolve hostname to IPs
+                    for info in socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM):
+                        resolved_ip = info[4][0]
+                        server_ips[resolved_ip] = url
+                except Exception:
+                    pass
+            # Also map the raw hostnames (in case client IP matches literally)
+            for url, _key in servers:
+                try:
+                    hostname = urlparse(url).hostname or ""
+                    server_ips[hostname.lower()] = url
+                except Exception:
+                    pass
+
             for s in sessions:
                 npi = s.get("NowPlayingItem", {})
                 ch_num = npi.get("ChannelNumber")
@@ -474,6 +518,15 @@ class StreamMonitor:
                     except (ValueError, TypeError):
                         pass
                     media_server_channel_numbers.add(ch_num)
+                    # Tag this channel to all IPs of the server that reported it
+                    # Sessions come from _fetch_media_server_sessions which
+                    # merges all servers, so we need to figure out which server
+                    # this session came from.  We tag the session's source URL
+                    # during fetch below.
+                    source_url = s.get("_source_url", "")
+                    for ip, url in server_ips.items():
+                        if url == source_url:
+                            pool_channels_by_ip.setdefault(ip, set()).add(ch_num)
 
         try:
             for key in redis_client.scan_iter(match="channel_stream:*"):
@@ -602,14 +655,17 @@ class StreamMonitor:
 
                         if not in_grace:
                             # Check media server pool (if configured)
-                            if media_server_channel_numbers is not None:
-                                if channel_number not in media_server_channel_numbers:
-                                    # Track how long absent from pool
+                            # Only apply pool protection if this client's IP
+                            # matches a configured media server
+                            client_pool_channels = pool_channels_by_ip.get(ip.lower()) if pool_channels_by_ip else None
+                            if client_pool_channels is not None:
+                                if channel_number not in client_pool_channels:
+                                    # Track how long absent from this client's server pool
                                     if ck not in self._idle_since:
                                         self._idle_since[ck] = now
                                         logger.debug(
-                                            f"Client {client_id} on CH {channel_number} "
-                                            f"not in media server pool - tracking"
+                                            f"Client {client_id} ({ip}) on CH {channel_number} "
+                                            f"not in its media server pool - tracking"
                                         )
                                     else:
                                         absent_seconds = now - self._idle_since[ck]
@@ -619,6 +675,10 @@ class StreamMonitor:
                                                 f"absent from media server pool "
                                                 f"{absent_seconds:.0f}s >= {timeout}s timeout"
                                             )
+                            elif media_server_channel_numbers is not None:
+                                # Media servers configured but this client's IP
+                                # doesn't match any -- no pool protection
+                                pass
 
                             # Check idle_seconds (always, regardless of media server)
                             if not should_terminate and idle_seconds is not None and idle_seconds >= timeout:
@@ -669,17 +729,18 @@ class StreamMonitor:
                             # Do NOT clear _idle_since here -- keep retrying
                             # until the client actually disappears from the scan
                         elif not in_grace:
-                            # Not terminating - if channel is in pool and not idle, clear tracking
-                            in_pool = (media_server_channel_numbers is not None
-                                       and channel_number in media_server_channel_numbers)
+                            # Not terminating - check if tracking should be cleared
+                            client_pool_channels = pool_channels_by_ip.get(ip.lower()) if pool_channels_by_ip else None
+                            in_pool = (client_pool_channels is not None
+                                       and channel_number in client_pool_channels)
                             not_idle = (idle_seconds is not None and idle_seconds < timeout)
                             if in_pool and not_idle:
                                 self._idle_since.pop(ck, None)
                             elif idle_seconds is None and in_pool:
                                 # No idle data but channel in pool - safe
                                 self._idle_since.pop(ck, None)
-                            elif media_server_channel_numbers is None:
-                                # No media server configured, track idle start
+                            elif client_pool_channels is None and media_server_channel_numbers is None:
+                                # No media server configured at all, track idle start
                                 if idle_seconds is not None and ck not in self._idle_since:
                                     self._idle_since[ck] = now
 
@@ -710,7 +771,7 @@ class StreamMonitor:
         if sessions is not None:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active
-            self._detect_orphans(scan_result, sessions, now, ChannelService)
+            self._detect_orphans(scan_result, sessions, now, ChannelService, pool_channels_by_ip)
         elif self._get_media_server_configs():
             # Configured but fetch failed -- keep last count, don't orphan-kill
             pass
