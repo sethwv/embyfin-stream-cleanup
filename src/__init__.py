@@ -54,20 +54,12 @@ class Plugin:
             "button_color": "orange",
         },
         {
-            "id": "start_debug_server",
-            "label": "Start Debug Server",
-            "description": "Start the debug dashboard HTTP server",
-            "button_label": "Start Server",
+            "id": "toggle_debug_server",
+            "label": "Toggle Debug Server",
+            "description": "Start or stop the debug dashboard HTTP server",
+            "button_label": "Start / Stop Server",
             "button_variant": "filled",
-            "button_color": "green",
-        },
-        {
-            "id": "stop_debug_server",
-            "label": "Stop Debug Server",
-            "description": "Stop the debug dashboard HTTP server",
-            "button_label": "Stop Server",
-            "button_variant": "filled",
-            "button_color": "red",
+            "button_color": "blue",
         },
         {
             "id": "status",
@@ -106,25 +98,39 @@ class Plugin:
                 logger_ctx.error(f"Error restarting monitor: {e}", exc_info=True)
                 return {"status": "error", "message": f"Failed to restart monitor: {str(e)}"}
 
-        # -- start_debug_server ------------------------------------------------
-        elif action == "start_debug_server":
+        # -- toggle_debug_server -----------------------------------------------
+        elif action == "toggle_debug_server":
             server = get_current_server()
-            if server and server.is_running():
-                return {
-                    "status": "error",
-                    "message": f"Debug server is already running on http://{server.host}:{server.port}/debug",
-                }
+            server_running = server and server.is_running()
 
-            # Check Redis for remote instance
             redis_client = get_redis_client()
-            if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                rhost = redis_decode(redis_client.get(REDIS_KEY_HOST)) or DEFAULT_HOST
-                rport = redis_decode(redis_client.get(REDIS_KEY_PORT)) or str(DEFAULT_PORT)
-                return {
-                    "status": "error",
-                    "message": f"Debug server is already running on http://{rhost}:{rport}/debug (another worker)",
-                }
+            remote_running = redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING)
 
+            # If running anywhere, stop it
+            if server_running or remote_running:
+                # Flag manual stop so autostart won't re-launch
+                if redis_client:
+                    try:
+                        from .config import REDIS_KEY_MANUAL_STOP
+                        redis_client.set(REDIS_KEY_MANUAL_STOP, "1")
+                    except Exception:
+                        pass
+
+                if server_running:
+                    server.stop()
+                    return {"status": "success", "message": "Debug server stopped"}
+
+                # Signal remote worker
+                if redis_client and remote_running:
+                    redis_client.set(REDIS_KEY_STOP, "1")
+                    for _ in range(50):
+                        if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+                            return {"status": "success", "message": "Debug server stopped"}
+                        time.sleep(0.1)
+                    redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
+                    return {"status": "warning", "message": "Stop signal sent but server did not confirm. Redis keys cleared."}
+
+            # Not running, start it
             port = int(settings.get("port", DEFAULT_PORT))
             host = normalize_host(settings.get("host", DEFAULT_HOST), DEFAULT_HOST)
             server = DebugServer(_monitor, port=port, host=host)
@@ -134,35 +140,6 @@ class Plugin:
                     "message": f"Debug server started on http://{host}:{port}/debug",
                 }
             return {"status": "error", "message": "Failed to start debug server. Port may be in use."}
-
-        # -- stop_debug_server -------------------------------------------------
-        elif action == "stop_debug_server":
-            # Flag manual stop so autostart won't re-launch during this runtime.
-            # The flag is cleared on fresh Dispatcharr boot (CLEANUP_REDIS_KEYS).
-            redis_client = get_redis_client()
-            if redis_client:
-                try:
-                    from .config import REDIS_KEY_MANUAL_STOP
-                    redis_client.set(REDIS_KEY_MANUAL_STOP, "1")
-                except Exception:
-                    pass
-
-            server = get_current_server()
-            if server and server.is_running():
-                server.stop()
-                return {"status": "success", "message": "Debug server stopped"}
-
-            # Signal remote worker
-            if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                redis_client.set(REDIS_KEY_STOP, "1")
-                for _ in range(50):
-                    if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                        return {"status": "success", "message": "Debug server stopped"}
-                    time.sleep(0.1)
-                redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
-                return {"status": "warning", "message": "Stop signal sent but server did not confirm. Redis keys cleared."}
-
-            return {"status": "error", "message": "Debug server is not running"}
 
         # -- status ------------------------------------------------------------
         elif action == "status":

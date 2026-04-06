@@ -11,7 +11,7 @@ When Emby or Jellyfin connects to Dispatcharr for live TV, client connections pe
 1. Configure a client identifier (IP address, hostname, or XC username) to tell the plugin which connections belong to your media server.
 2. A background monitor polls active Dispatcharr channels on a configurable interval (default: 10s).
 3. If a matching client's `last_active` timestamp goes stale longer than the idle timeout (default: 30s), the connection is terminated via `ChannelService.stop_client()`.
-4. When media server URLs are configured, the plugin also polls the Sessions API to detect **orphaned** connections — streams the media server considers stopped but Dispatcharr is still serving. These are terminated after confirmation over two consecutive poll cycles.
+4. When media server URLs are configured, the plugin also polls the Sessions API to detect **orphaned** connections - streams the media server considers stopped but Dispatcharr is still serving. These are terminated after confirmation over two consecutive poll cycles.
 
 No webhooks or external configuration needed. The plugin watches Dispatcharr's own activity data directly.
 
@@ -44,7 +44,7 @@ No webhooks or external configuration needed. The plugin watches Dispatcharr's o
 | Debug Server Port | `9193` | Port for the debug server |
 | Debug Server Host | `0.0.0.0` | Host address to bind the debug server to |
 
-Multiple media servers are supported — increase the server count to add additional URL/API key pairs.
+Multiple media servers are supported. Increase the server count to add additional URL/API key pairs.
 
 ### Finding Your Client Identifier
 
@@ -77,8 +77,8 @@ The page auto-refreshes at the poll interval rate.
 
 In the Dispatcharr plugin settings page:
 
-- **Start Monitor** - Start the background activity monitor (and debug server if enabled)
-- **Stop Monitor** - Stop the monitor and debug server
+- **Restart Monitor** - Restart the background activity monitor (applies config changes)
+- **Start / Stop Server** - Toggle the debug dashboard HTTP server
 - **Check Status** - Show whether the monitor and debug server are running
 
 ## Requirements

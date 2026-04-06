@@ -225,7 +225,7 @@ class DebugServer:
                             f'<span class="channel-num">{srv_label}</span>'
                             f'{srv_badge}'
                             f'</div>'
-                            f'<div class="status-desc">{srv_url_display} &mdash; {srv_detail}</div>'
+                            f'<div class="status-desc">{srv_url_display} - {srv_detail}</div>'
                             f'</div>'
                         )
 
@@ -252,7 +252,7 @@ class DebugServer:
                     if ch_in_grace:
                         status_class = "grace"
                         status_label = f"Grace period ({ch_state})"
-                        status_desc = "Channel is buffering or switching streams &mdash; terminations paused"
+                        status_desc = "Channel is buffering or switching streams - terminations paused"
                     elif has_idle:
                         status_class = "pending"
                         status_label = "Idle matched clients detected"
@@ -604,9 +604,9 @@ class DebugServer:
         label_html = ""
         if is_match:
             if client.get("is_orphan"):
-                label_html = '<span class="match-reason orphan-warn">ORPHAN (no active media server session &mdash; will terminate)</span>'
+                label_html = '<span class="match-reason orphan-warn">ORPHAN (no active media server session - will terminate)</span>'
             elif in_grace and idle_seconds is not None and idle_seconds >= timeout:
-                label_html = f'<span class="match-reason" style="color:#1565c0">GRACE PERIOD (idle {int(idle_seconds)}s &mdash; termination paused)</span>'
+                label_html = f'<span class="match-reason" style="color:#1565c0">GRACE PERIOD (idle {int(idle_seconds)}s - termination paused)</span>'
             elif idle_seconds is not None and idle_seconds >= timeout:
                 label_html = f'<span class="match-reason idle-warn">WILL TERMINATE (idle {int(idle_seconds)}s / {timeout}s timeout)</span>'
             elif idle_seconds is not None:
