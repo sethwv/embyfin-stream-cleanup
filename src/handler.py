@@ -626,29 +626,48 @@ class StreamMonitor:
                                 reason = f"idle {idle_seconds:.0f}s >= {timeout}s timeout"
 
                         if should_terminate:
-                            logger.info(
-                                f"Terminating client {client_id} on CH {channel_number} "
-                                f"({channel_name}): {reason} "
-                                f"(ip={ip}, user={username})"
-                            )
+                            # Rate-limit stop requests to once per poll cycle
+                            stop_key = f"_stop_sent:{channel_uuid}:{client_id}"
+                            if not getattr(self, '_stop_sent', None):
+                                self._stop_sent = set()
+
+                            if stop_key not in self._stop_sent:
+                                logger.info(
+                                    f"Requesting termination of client {client_id} on CH {channel_number} "
+                                    f"({channel_name}): {reason} "
+                                    f"(ip={ip}, user={username})"
+                                )
+                                self._stop_sent.add(stop_key)
                             try:
                                 result = ChannelService.stop_client(channel_uuid, client_id)
+                                locally = result.get("locally_processed", False)
                                 if result.get("status") == "success":
-                                    logger.info(f"Successfully terminated client {client_id}")
-                                    self._stopped_log.append({
-                                        "time": now,
-                                        "channel": f"CH {channel_number} ({channel_name})",
-                                        "ip": ip,
-                                        "username": username,
-                                        "reason": reason,
-                                    })
-                                    if len(self._stopped_log) > 20:
-                                        self._stopped_log = self._stopped_log[-20:]
-                                    self._idle_since.pop(ck, None)
+                                    if locally:
+                                        logger.info(f"Client {client_id} stopped locally")
+                                    else:
+                                        logger.debug(f"Stop request queued for client {client_id} (remote worker)")
+                                    # Log only once per client
+                                    log_key = f"{channel_uuid}:{client_id}"
+                                    logged = getattr(self, '_stop_logged', set())
+                                    if log_key not in logged:
+                                        self._stopped_log.append({
+                                            "time": now,
+                                            "channel": f"CH {channel_number} ({channel_name})",
+                                            "ip": ip,
+                                            "username": username,
+                                            "reason": reason,
+                                        })
+                                        if len(self._stopped_log) > 20:
+                                            self._stopped_log = self._stopped_log[-20:]
+                                        if not hasattr(self, '_stop_logged'):
+                                            self._stop_logged = set()
+                                        self._stop_logged.add(log_key)
                                 else:
                                     logger.warning(f"stop_client returned: {result}")
                             except Exception as e:
                                 logger.error(f"Error stopping client {client_id}: {e}", exc_info=True)
+                            # Do NOT clear _idle_since here -- keep retrying
+                            # until the client actually disappears from the scan
                         elif not in_grace:
                             # Not terminating - if channel is in pool and not idle, clear tracking
                             in_pool = (media_server_channel_numbers is not None
@@ -680,6 +699,12 @@ class StreamMonitor:
         stale = [k for k in self._idle_since if k not in active_keys]
         for k in stale:
             self._idle_since.pop(k, None)
+
+        # Clear per-cycle stop tracking; clear log dedup for gone clients
+        self._stop_sent = set()
+        if hasattr(self, '_stop_logged'):
+            active_str_keys = {f"{uuid}:{cid}" for uuid, cid in active_keys}
+            self._stop_logged = self._stop_logged & active_str_keys
 
         # ── Media server orphan detection ────────────────────────────────
         if sessions is not None:
