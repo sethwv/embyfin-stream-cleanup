@@ -143,25 +143,34 @@ class DebugServer:
                 if media_servers:
                     media_server_cards = '<h2>Media Servers</h2>'
                     for srv in media_servers:
-                        srv_url = srv.get("url", "?")
+                        srv_num = srv.get("num", "?")
+                        srv_type = srv.get("type")
+                        srv_label = f'Server {srv_num}'
+                        if srv_type:
+                            srv_label += f' ({srv_type})'
                         srv_active = srv.get("active")
                         srv_error = srv.get("error")
                         if srv_error:
-                            srv_class = "pending"
+                            srv_class = "srv-unknown"
                             srv_badge = '<span class="badge pending">Error</span>'
                             srv_detail = f'<span class="warn">{srv_error}</span>'
                         elif srv_active is not None:
-                            srv_class = "active"
+                            if srv_type == "Jellyfin":
+                                srv_class = "srv-jellyfin"
+                            elif srv_type == "Emby":
+                                srv_class = "srv-emby"
+                            else:
+                                srv_class = "srv-unknown"
                             srv_badge = f'<span class="badge active">{srv_active} session(s)</span>'
                             srv_detail = f'{srv_active} active stream(s) detected'
                         else:
-                            srv_class = "idle"
+                            srv_class = "srv-unknown"
                             srv_badge = '<span class="badge idle">Connecting</span>'
                             srv_detail = 'Waiting for first poll...'
                         media_server_cards += (
                             f'<div class="card {srv_class}">'
                             f'<div class="card-header">'
-                            f'<span class="channel-num">{srv_url}</span>'
+                            f'<span class="channel-num">{srv_label}</span>'
                             f'{srv_badge}'
                             f'</div>'
                             f'<div class="status-desc">{srv_detail}</div>'
@@ -331,6 +340,9 @@ class DebugServer:
         .card.pending {{ border-left: 4px solid #ff9800; }}
         .card.idle {{ border-left: 4px solid #555; }}
         .card.grace {{ border-left: 4px solid #42a5f5; }}
+        .card.srv-emby {{ border-left: 4px solid #4caf50; }}
+        .card.srv-jellyfin {{ border-left: 4px solid #42a5f5; }}
+        .card.srv-unknown {{ border-left: 4px solid #555; }}
         .card-header {{
             display: flex;
             justify-content: space-between;

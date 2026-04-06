@@ -150,6 +150,24 @@ class StreamMonitor:
                 servers.append((url, key))
         return servers
 
+    @staticmethod
+    def _detect_server_type(url):
+        """Probe /System/Info/Public to determine Emby vs Jellyfin."""
+        try:
+            req = urllib.request.Request(
+                f"{url}/System/Info/Public",
+                headers={"Accept": "application/json"},
+            )
+            with urllib.request.urlopen(req, timeout=3) as resp:
+                info = json.loads(resp.read().decode("utf-8"))
+                # Jellyfin includes ProductName; Emby does not
+                product = info.get("ProductName", "")
+                if "jellyfin" in product.lower():
+                    return "Jellyfin"
+                return "Emby"
+        except Exception:
+            return None
+
     def _fetch_media_server_sessions(self):
         """Fetch active sessions from all configured Emby/Jellyfin servers.
 
@@ -164,8 +182,16 @@ class StreamMonitor:
         all_sessions = []
         errors = []
         per_server = []
-        for url, api_key in servers:
+        for idx, (url, api_key) in enumerate(servers, 1):
             endpoint = f"{url}/Sessions"
+            # Detect server type on first encounter or after error
+            server_type = getattr(self, "_server_types", {}).get(url)
+            if server_type is None:
+                server_type = self._detect_server_type(url)
+                if not hasattr(self, "_server_types"):
+                    self._server_types = {}
+                if server_type:
+                    self._server_types[url] = server_type
             try:
                 req = urllib.request.Request(endpoint, headers={
                     "Accept": "application/json",
@@ -180,11 +206,11 @@ class StreamMonitor:
                             if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES]
                     all_sessions.extend(live)
                     active = len(live)
-                    per_server.append({"url": url, "active": active, "error": None})
+                    per_server.append({"num": idx, "type": server_type, "active": active, "error": None})
             except Exception as e:
-                errors.append(f"{url}: {e}")
-                logger.warning(f"Failed to fetch media server sessions from {url}: {e}")
-                per_server.append({"url": url, "active": None, "error": str(e)})
+                errors.append(f"Server {idx}: {e}")
+                logger.warning(f"Failed to fetch media server sessions from server {idx}: {e}")
+                per_server.append({"num": idx, "type": server_type, "active": None, "error": str(e)})
 
         self._media_server_status = per_server
         self._emby_error = "; ".join(errors) if errors else None
