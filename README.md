@@ -40,6 +40,7 @@ No webhooks or external configuration needed. The plugin watches Dispatcharr's o
 | Media Server URL | _(empty)_ | Base URL (e.g. `http://192.168.1.100:8096`). Polls Sessions API for orphan detection. Leave blank to disable. |
 | Media Server API Key | _(empty)_ | API key for the media server (Settings > API Keys) |
 | Enable Debug Server | `false` | Start an HTTP debug dashboard (optional) |
+| Mask Sensitive Data | `false` | Hide usernames, IPs, and URLs in the debug dashboard |
 | Debug Server Port | `9193` | Port for the debug server |
 | Debug Server Host | `0.0.0.0` | Host address to bind the debug server to |
 

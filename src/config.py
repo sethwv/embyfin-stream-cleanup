@@ -125,6 +125,13 @@ _FIELDS_AFTER_SERVERS = [
         "description": "Start an HTTP server for the debug dashboard (optional)",
     },
     {
+        "id": "mask_sensitive_data",
+        "label": "Mask Sensitive Data in Debug Page",
+        "type": "boolean",
+        "default": False,
+        "description": "Hide usernames, IPs, and URLs in the debug dashboard",
+    },
+    {
         "id": "port",
         "label": "Debug Server Port",
         "type": "number",

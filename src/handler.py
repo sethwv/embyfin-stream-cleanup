@@ -206,11 +206,11 @@ class StreamMonitor:
                             if s.get("NowPlayingItem", {}).get("Type") in _LIVE_TV_TYPES]
                     all_sessions.extend(live)
                     active = len(live)
-                    per_server.append({"num": idx, "type": server_type, "active": active, "error": None})
+                    per_server.append({"num": idx, "url": url, "type": server_type, "active": active, "error": None})
             except Exception as e:
                 errors.append(f"Server {idx}: {e}")
                 logger.warning(f"Failed to fetch media server sessions from server {idx}: {e}")
-                per_server.append({"num": idx, "type": server_type, "active": None, "error": str(e)})
+                per_server.append({"num": idx, "url": url, "type": server_type, "active": None, "error": str(e)})
 
         self._media_server_status = per_server
         self._emby_error = "; ".join(errors) if errors else None

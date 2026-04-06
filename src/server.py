@@ -11,6 +11,7 @@ Routes:
 """
 
 import logging
+import re
 import socket
 import threading
 import time
@@ -26,6 +27,45 @@ logger = logging.getLogger(__name__)
 
 # Module-level reference to the currently running server instance (per process).
 _debug_server = None
+
+
+# ── Masking helpers ──────────────────────────────────────────────────────────
+
+_IP_RE = re.compile(r'\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}')
+
+
+def _mask_ip(ip):
+    """Mask an IP address, keeping the first octet: 192.168.1.50 → 192.*.*.*"""
+    parts = ip.split(".")
+    if len(parts) == 4:
+        return f"{parts[0]}.*.*.*"
+    return "***"
+
+
+def _mask_url(url):
+    """Mask the host portion of a URL: http://192.168.1.50:8096 → http://192.*.*.*:8096"""
+    if not url or url == "?":
+        return url
+    # Handle http(s)://host(:port)/path
+    m = re.match(r'(https?://)(.+?)(\:\d+)?(/.*)?\s*$', url, re.IGNORECASE)
+    if m:
+        scheme, host, port, path = m.group(1), m.group(2), m.group(3) or "", m.group(4) or ""
+        if _IP_RE.fullmatch(host):
+            host = _mask_ip(host)
+        else:
+            # hostname: keep TLD, mask rest
+            host = "***"
+        return f"{scheme}{host}{port}{path}"
+    return "***"
+
+
+def _mask_username(username):
+    """Mask a username: alice → a***e, ab → a*"""
+    if not username:
+        return username
+    if len(username) <= 2:
+        return username[0] + "*"
+    return username[0] + "***" + username[-1]
 
 
 def get_current_server():
@@ -107,6 +147,7 @@ class DebugServer:
 
             plugin_name = PLUGIN_CONFIG.get('name', 'Emby Stream Cleanup')
             identifier = self.settings.get("client_identifier", "") or ""
+            mask = self.settings.get("mask_sensitive_data", False)
             identifier_display = identifier or "(not set)"
             timeout = debug_state.get("idle_timeout", 30)
             poll_interval = debug_state.get("poll_interval", 10)
@@ -115,8 +156,16 @@ class DebugServer:
             # Resolved IPs info
             resolved_ips = debug_state.get("resolved_ips", [])
             resolved_html = ""
-            if resolved_ips and identifier:
-                resolved_html = f' &rarr; <span>{", ".join(resolved_ips)}</span>'
+            if mask:
+                identifier_display = ", ".join(
+                    _mask_ip(v.strip()) if _IP_RE.fullmatch(v.strip()) else _mask_username(v.strip())
+                    for v in identifier.split(",")
+                ) if identifier and identifier != "ALL" else identifier_display
+                if resolved_ips and identifier:
+                    resolved_html = f' &rarr; <span>{", ".join(_mask_ip(ip) for ip in resolved_ips)}</span>'
+            else:
+                if resolved_ips and identifier:
+                    resolved_html = f' &rarr; <span>{", ".join(resolved_ips)}</span>'
 
             # Monitor status
             if monitor_running:
@@ -145,15 +194,18 @@ class DebugServer:
                     for srv in media_servers:
                         srv_num = srv.get("num", "?")
                         srv_type = srv.get("type")
+                        srv_url = srv.get("url", "")
                         srv_label = f'Server {srv_num}'
                         if srv_type:
                             srv_label += f' ({srv_type})'
+                        srv_url_display = _mask_url(srv_url) if mask else srv_url
                         srv_active = srv.get("active")
                         srv_error = srv.get("error")
                         if srv_error:
                             srv_class = "srv-unknown"
                             srv_badge = '<span class="badge pending">Error</span>'
-                            srv_detail = f'<span class="warn">{srv_error}</span>'
+                            err_display = _mask_url(srv_error) if mask else srv_error
+                            srv_detail = f'<span class="warn">{err_display}</span>'
                         elif srv_active is not None:
                             if srv_type == "Jellyfin":
                                 srv_class = "srv-jellyfin"
@@ -173,7 +225,7 @@ class DebugServer:
                             f'<span class="channel-num">{srv_label}</span>'
                             f'{srv_badge}'
                             f'</div>'
-                            f'<div class="status-desc">{srv_detail}</div>'
+                            f'<div class="status-desc">{srv_url_display} &mdash; {srv_detail}</div>'
                             f'</div>'
                         )
 
@@ -230,13 +282,13 @@ class DebugServer:
                         else:
                             card_html += '<div class="client-note target-note">Idle clients WILL be terminated after timeout</div>'
                         for c in matched_clients:
-                            card_html += self._render_client_row(c, is_match=True, timeout=timeout)
+                            card_html += self._render_client_row(c, is_match=True, timeout=timeout, mask=mask)
 
                     if other_clients:
                         card_html += f'<div class="section-label safe">Other Clients ({len(other_clients)})</div>'
                         card_html += '<div class="client-note safe-note">These connections will NOT be affected</div>'
                         for c in other_clients:
-                            card_html += self._render_client_row(c, is_match=False, timeout=timeout)
+                            card_html += self._render_client_row(c, is_match=False, timeout=timeout, mask=mask)
 
                     card_html += '</div>'
                     channels_html += card_html
@@ -255,13 +307,15 @@ class DebugServer:
                     ago = int(now - ts)
                     reason = entry.get("reason", "idle")
                     reason_label = '<span class="orphan-warn">[ORPHAN]</span> ' if reason == "orphan" else ""
+                    log_ip = _mask_ip(entry.get("ip", "?")) if mask else entry.get("ip", "?")
+                    log_user = _mask_username(entry.get("username", "?")) if mask else entry.get("username", "?")
                     log_html += (
                         f'<div class="log-entry">'
                         f'<span class="log-time">{ts_str} ({ago}s ago)</span> '
                         f'{reason_label}'
                         f'{entry.get("channel", "?")} '
-                        f'<span class="log-detail">ip={entry.get("ip", "?")} '
-                        f'user={entry.get("username", "?")} '
+                        f'<span class="log-detail">ip={log_ip} '
+                        f'user={log_user} '
                         f'idle={entry.get("idle_seconds", "?")}s</span>'
                         f'</div>'
                     )
@@ -532,11 +586,15 @@ class DebugServer:
     # -- Client row rendering --------------------------------------------------
 
     @staticmethod
-    def _render_client_row(client, is_match, timeout=30):
+    @staticmethod
+    def _render_client_row(client, is_match, timeout=30, mask=False):
         """Render a single Dispatcharr client as an HTML row."""
         row_class = "match" if is_match else "safe"
         ip = client.get("ip", "?")
         username = client.get("username", "")
+        if mask:
+            ip = _mask_ip(ip) if ip != "?" else ip
+            username = _mask_username(username) if username else username
         user_agent = client.get("user_agent", "")
         duration = client.get("connected_duration", "")
         match_reason = client.get("match_reason", "")
