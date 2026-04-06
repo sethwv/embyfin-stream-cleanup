@@ -52,6 +52,26 @@ Check Dispatcharr's active connections while your media server is streaming. The
 
 When enabled, visit `http://<host>:9193/debug` to see active channels, matched clients, media server pool status, and recent terminations.
 
+## FAQ
+
+**What happens during stream failover or buffering?**
+Termination timers pause automatically. Dispatcharr reports a channel state like `buffering` or `connecting` during these events, and the plugin ignores idle time until the stream stabilizes.
+
+**My media server opens multiple connections to the same channel. Will extras get killed?**
+No. Pool protection is channel-based, not count-based. As long as the media server has an active session on that channel, all matching connections on it are considered safe. Extra connections get cleaned up naturally when the media server stops watching the channel entirely.
+
+**What if the same identifier is configured on multiple servers?**
+The lower-numbered server wins. Duplicate identifiers on higher-numbered servers are ignored (with a warning in the logs).
+
+**A connection was terminated but the media server reconnects immediately — won't it loop?**
+The plugin uses a signal-only approach. It sets a Redis key that tells Dispatcharr's stream generator to close the connection on its next chunk. If the media server reconnects, it gets a fresh connection with a new client ID. If it's still in the session pool, the new connection will be left alone.
+
+**What if my media server uses a hostname instead of an IP?**
+Hostnames in the identifier field are automatically resolved to IP addresses for matching.
+
+**Will this affect non-media-server clients (e.g. direct IPTV app connections)?**
+Only connections whose IP or username matches a configured identifier are monitored. Everything else is completely ignored.
+
 ## Requirements
 
 - Dispatcharr v0.22.0 or later
