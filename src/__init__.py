@@ -163,9 +163,14 @@ class Plugin:
 
             redis_client = get_redis_client()
             remote_monitor = False
+            remote_server = False
             if redis_client:
                 try:
                     remote_monitor = read_redis_flag(redis_client, REDIS_KEY_MONITOR)
+                except Exception:
+                    pass
+                try:
+                    remote_server = read_redis_flag(redis_client, REDIS_KEY_RUNNING)
                 except Exception:
                     pass
 
@@ -177,6 +182,10 @@ class Plugin:
 
             if server_running:
                 parts.append(f"Debug server: http://{server.host}:{server.port}/debug")
+            elif remote_server:
+                rhost = redis_decode(redis_client.get(REDIS_KEY_HOST)) or DEFAULT_HOST
+                rport = redis_decode(redis_client.get(REDIS_KEY_PORT)) or str(DEFAULT_PORT)
+                parts.append(f"Debug server: http://{rhost}:{rport}/debug (another worker)")
             else:
                 parts.append("Debug server: stopped")
 
