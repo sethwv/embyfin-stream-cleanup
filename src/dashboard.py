@@ -196,9 +196,6 @@ def render_client_row(client, is_match, timeout=30, poll_interval=10, mask=False
     fields = [f'<span class="client-field"><span class="label">IP:</span> <span class="value">{ip}</span></span>']
     if username:
         fields.append(f'<span class="client-field"><span class="label">User:</span> <span class="value">{username}</span></span>')
-    if user_agent:
-        ua_short = user_agent[:60] + ("..." if len(user_agent) > 60 else "")
-        fields.append(f'<span class="client-field"><span class="label">UA:</span> <span class="value">{ua_short}</span></span>')
     if duration:
         fields.append(f'<span class="client-field"><span class="label">Connected:</span> <span class="value">{duration}</span></span>')
 
@@ -575,7 +572,8 @@ def _debug_html(plugin_name, monitor_badge,
             Each configured media server has client identifiers that link its session pool to
             Dispatcharr connections. When a connection's channel is no longer in its server's
             active session pool for <strong>{timeout}s</strong>, the connection is terminated.
-            Idle connections (no data flowing for <strong>{timeout}s</strong>) are also terminated.
+            Connections with no data flowing are terminated after <strong>{timeout * 2}s</strong>.
+            Orphaned connections (no matching media server session) are also cleaned up.
             Non-matching clients are <strong>never</strong> affected.
         </div>
 
