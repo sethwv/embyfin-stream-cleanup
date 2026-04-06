@@ -128,28 +128,49 @@ class StreamMonitor:
 
     # ── Media server session helpers ─────────────────────────────────────────
 
-    def _fetch_media_server_sessions(self):
-        """Fetch active sessions from Emby/Jellyfin.
+    def _get_media_server_configs(self):
+        """Return a list of (url, api_key) tuples for all configured servers."""
+        count = max(1, int(self._settings.get("media_server_count", 1)))
+        servers = []
+        for n in range(1, count + 1):
+            suffix = f"_{n}" if n > 1 else ""
+            url = (self._settings.get(f"media_server_url{suffix}") or "").strip().rstrip("/")
+            key = (self._settings.get(f"media_server_api_key{suffix}") or "").strip()
+            # Migrate legacy field names from single-server config
+            if n == 1 and not url:
+                url = (self._settings.get("emby_url") or "").strip().rstrip("/")
+            if n == 1 and not key:
+                key = (self._settings.get("emby_api_key") or "").strip()
+            if url and key:
+                servers.append((url, key))
+        return servers
 
-        Returns a list of session dicts, or ``None`` if not configured.
+    def _fetch_media_server_sessions(self):
+        """Fetch active sessions from all configured Emby/Jellyfin servers.
+
+        Returns a list of session dicts, or ``None`` if no servers are configured.
         Sets ``self._emby_error`` on failure.
         """
-        emby_url = (self._settings.get("emby_url") or "").strip().rstrip("/")
-        api_key = (self._settings.get("emby_api_key") or "").strip()
-        if not emby_url or not api_key:
+        servers = self._get_media_server_configs()
+        if not servers:
             return None
 
-        url = f"{emby_url}/Sessions?api_key={api_key}"
-        try:
-            req = urllib.request.Request(url, headers={"Accept": "application/json"})
-            with urllib.request.urlopen(req, timeout=5) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-                self._emby_error = None
-                return data if isinstance(data, list) else []
-        except Exception as e:
-            self._emby_error = str(e)
-            logger.warning(f"Failed to fetch media server sessions: {e}")
-            return None
+        all_sessions = []
+        errors = []
+        for url, api_key in servers:
+            endpoint = f"{url}/Sessions?api_key={api_key}"
+            try:
+                req = urllib.request.Request(endpoint, headers={"Accept": "application/json"})
+                with urllib.request.urlopen(req, timeout=5) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                    if isinstance(data, list):
+                        all_sessions.extend(data)
+            except Exception as e:
+                errors.append(f"{url}: {e}")
+                logger.warning(f"Failed to fetch media server sessions from {url}: {e}")
+
+        self._emby_error = "; ".join(errors) if errors else None
+        return all_sessions
 
     @staticmethod
     def _count_active_streams(sessions):
@@ -554,7 +575,7 @@ class StreamMonitor:
             emby_active = self._count_active_streams(sessions)
             self._emby_active_count = emby_active
             self._detect_orphans(scan_result, emby_active, now, ChannelService)
-        elif (self._settings.get("emby_url") or "").strip():
+        elif self._get_media_server_configs():
             # Configured but fetch failed -- keep last count, don't orphan-kill
             pass
         else:
@@ -587,7 +608,7 @@ class StreamMonitor:
             "identifier_configured": bool(identifiers),
             "resolved_ips": sorted(resolved_ips) if resolved_ips else [],
             "stopped_log": list(self._stopped_log),
-            "emby_configured": bool((self._settings.get("emby_url") or "").strip()),
+            "emby_configured": bool(self._get_media_server_configs()),
             "emby_active_count": self._emby_active_count,
             "emby_error": self._emby_error,
         }

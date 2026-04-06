@@ -63,7 +63,9 @@ LEADER_TTL = 60  # seconds
 HEARTBEAT_TTL = 30  # seconds
 
 # ── Plugin field definitions ─────────────────────────────────────────────────
-PLUGIN_FIELDS = [
+
+# Fields that appear before the media server section
+_FIELDS_BEFORE_SERVERS = [
     {
         "id": "client_identifier",
         "label": "Client Identifier",
@@ -97,31 +99,24 @@ PLUGIN_FIELDS = [
         "description": "How often to check client activity",
         "placeholder": "10",
     },
-    {
-        "id": "emby_url",
-        "label": "Emby Server URL",
-        "type": "string",
-        "default": "",
-        "description": (
-            "Base URL of the Emby server (e.g. http://192.168.1.100:8096). "
-            "When set, the plugin polls Emby's Sessions API to detect orphaned "
-            "connections that Emby failed to close. Leave blank to rely solely "
-            "on idle detection"
-        ),
-        "placeholder": "http://192.168.1.100:8096",
-    },
-    {
-        "id": "emby_api_key",
-        "label": "Emby API Key",
-        "type": "string",
-        "input_type": "password",
-        "default": "",
-        "description": (
-            "API key for the Emby server. "
-            "Generate one in Emby under Settings > API Keys"
-        ),
-        "placeholder": "your-emby-api-key",
-    },
+]
+
+_MEDIA_SERVER_COUNT_FIELD = {
+    "id": "media_server_count",
+    "label": "Number of Media Servers",
+    "type": "number",
+    "default": 1,
+    "min": 1,
+    "description": (
+        "Number of Emby/Jellyfin servers to monitor for orphan detection. "
+        "After changing this value, save settings and restart the plugin "
+        "to see the new server fields"
+    ),
+    "placeholder": "1",
+}
+
+# Fields that appear after the media server section
+_FIELDS_AFTER_SERVERS = [
     {
         "id": "enable_debug_server",
         "label": "Enable Debug Server",
@@ -153,3 +148,50 @@ PLUGIN_FIELDS = [
         "placeholder": "0.0.0.0",
     },
 ]
+
+
+def _build_server_fields(n):
+    """Generate URL + API key fields for media server *n* (1-based)."""
+    suffix = f"_{n}" if n > 1 else ""
+    label_num = f" {n}" if n > 1 else ""
+    return [
+        {
+            "id": f"media_server_url{suffix}",
+            "label": f"Media Server{label_num} URL",
+            "type": "string",
+            "default": "",
+            "description": (
+                f"Base URL of media server{label_num} (e.g. http://192.168.1.100:8096). "
+                "Polls the Sessions API to detect orphaned connections. "
+                "Leave blank to disable"
+            ),
+            "placeholder": "http://192.168.1.100:8096",
+        },
+        {
+            "id": f"media_server_api_key{suffix}",
+            "label": f"Media Server{label_num} API Key",
+            "type": "string",
+            "input_type": "password",
+            "default": "",
+            "description": (
+                f"API key for media server{label_num}. "
+                "Generate one under Settings > API Keys"
+            ),
+            "placeholder": "your-api-key",
+        },
+    ]
+
+
+def build_plugin_fields(server_count=1):
+    """Build the complete field list for *server_count* media servers."""
+    count = max(1, int(server_count))
+    fields = list(_FIELDS_BEFORE_SERVERS)
+    fields.append(_MEDIA_SERVER_COUNT_FIELD)
+    for n in range(1, count + 1):
+        fields.extend(_build_server_fields(n))
+    fields.extend(_FIELDS_AFTER_SERVERS)
+    return fields
+
+
+# Default field list (1 server) - used by plugin.json and as fallback
+PLUGIN_FIELDS = build_plugin_fields(1)

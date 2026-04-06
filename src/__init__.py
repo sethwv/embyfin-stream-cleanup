@@ -9,7 +9,7 @@ import logging
 import time
 
 from .config import (
-    PLUGIN_CONFIG, PLUGIN_FIELDS,
+    PLUGIN_CONFIG, PLUGIN_FIELDS, build_plugin_fields, PLUGIN_DB_KEY,
     REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP,
     REDIS_KEY_MONITOR,
     DEFAULT_PORT, DEFAULT_HOST,
@@ -33,7 +33,16 @@ class Plugin:
     version     = PLUGIN_CONFIG["version"]
     author      = PLUGIN_CONFIG["author"]
 
-    fields  = PLUGIN_FIELDS
+    @property
+    def fields(self):
+        """Build fields dynamically based on saved media_server_count."""
+        try:
+            from apps.plugins.models import PluginConfig
+            cfg = PluginConfig.objects.get(key=PLUGIN_DB_KEY)
+            count = int(cfg.settings.get("media_server_count", 1))
+        except Exception:
+            count = 1
+        return build_plugin_fields(count)
 
     actions = [
         {
