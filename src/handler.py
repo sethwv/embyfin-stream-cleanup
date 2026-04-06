@@ -395,12 +395,6 @@ class StreamMonitor:
             ck = (ch_uuid, client["client_id"])
             client["is_orphan"] = True
 
-            # Never terminate a client that is actively receiving data
-            idle = client.get("idle_seconds") or 0
-            if idle < poll_interval:
-                self._orphaned_since.pop(ck, None)
-                continue
-
             if ck not in self._orphaned_since:
                 self._orphaned_since[ck] = now
                 logger.info(
