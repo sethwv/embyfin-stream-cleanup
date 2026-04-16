@@ -1,27 +1,21 @@
-# Emby Stream Cleanup
+# Embyfin Stream Cleanup
 
-A [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that monitors client activity and automatically terminates idle Emby connections in Dispatcharr.
+A [Dispatcharr](https://github.com/Dispatcharr/Dispatcharr) plugin that automatically terminates stale Emby/Jellyfin connections in Dispatcharr.
 
 ## The Problem
 
-When Emby connects to Dispatcharr for live TV, it opens client connections that persist even after users stop watching. Emby does not close these connections on its own, which wastes provider stream slots and can hit connection limits.
+When Emby or Jellyfin connects to Dispatcharr for live TV, client connections persist even after users stop watching. This wastes provider stream slots and can hit connection limits.
 
 ## How It Works
 
-1. You tell the plugin how to identify Emby's connections (IP address, hostname, or XC username).
-2. A background monitor polls all active Dispatcharr channels on a configurable interval (default: 10s).
-3. For each channel, it checks whether clients matching the identifier are still receiving data.
-4. If a matching client's `last_active` timestamp goes stale for longer than the idle timeout (default: 30s), the plugin terminates that specific connection via `ChannelService.stop_client()`.
-5. When an Emby server URL is configured, the plugin also polls Emby's Sessions API to detect **orphaned** connections — streams that Emby considers stopped but Dispatcharr is still serving. These are terminated after confirmation over two consecutive poll cycles.
+1. Configure one or more media servers with their URL, API key, and the client identifier they use when connecting to Dispatcharr.
+2. A background monitor polls active Dispatcharr channels on a configurable interval (default: 10s).
+3. Connections are terminated when either condition is met:
+   - **Idle**: no data has flowed for longer than the timeout (default: 30s)
+   - **Orphaned**: the channel is no longer in the media server's active session pool for longer than the timeout
+4. During stream failover or buffering the timer pauses automatically.
 
-No webhooks, no external configuration in Emby. The plugin watches Dispatcharr's own activity data directly.
-
-## Safety
-
-- Only connections matching the configured Emby identifier are ever affected.
-- Non-matching clients on the same channel are never touched.
-- Active Emby connections (still receiving data) are never terminated.
-- The plugin only reads Dispatcharr's existing client metadata from Redis; it does not modify any upstream state.
+Only connections matching a configured identifier are ever affected. Non-matching clients are never touched.
 
 ## Installation
 
@@ -34,59 +28,56 @@ No webhooks, no external configuration in Emby. The plugin watches Dispatcharr's
 
 | Setting | Default | Description |
 |---------|---------|-------------|
-| Client Identifier | _(empty)_ | IP, hostname, or XC username Emby uses to connect. Comma-separated for multiple values. Use `ALL` to match every client. |
-| Idle Timeout | `30` | Seconds a matching client must be idle before termination |
-| Poll Interval | `10` | How often (seconds) to scan for idle clients |
-| Emby Server URL | _(empty)_ | Base URL of the Emby server (e.g. `http://192.168.1.100:8096`). Enables orphan detection via Sessions API. |
-| Emby API Key | _(empty)_ | API key for the Emby server (Settings > API Keys) |
-| Enable Debug Server | `false` | Start an HTTP debug dashboard (optional) |
+| Timeout | `30` | Seconds before a matching connection is terminated (idle or absent from media server pool) |
+| Poll Interval | `10` | How often (seconds) to scan for stale clients |
+| Number of Media Servers | `1` | How many Emby/Jellyfin servers to monitor. Save and refresh the page to see new fields |
+| Media Server URL | _(empty)_ | Base URL (e.g. `http://192.168.1.100:8096`) |
+| Media Server API Key | _(empty)_ | API key (Settings > API Keys in Emby/Jellyfin) |
+| Media Server Client Identifier | _(empty)_ | IP, hostname, or XC username the server uses when connecting to Dispatcharr. Comma-separated for multiple values |
+| Enable Debug Server | `false` | Start an HTTP debug dashboard |
 | Debug Server Port | `9193` | Port for the debug server |
+| Debug Server Host | `0.0.0.0` | Bind address for the debug server |
 
-### Finding Your Emby Identifier
+### Finding Your Client Identifier
 
-Check Dispatcharr's active connections while Emby is streaming. The IP address or XC username shown for Emby's connection is what you enter here. Multiple values can be comma-separated (e.g. `192.168.1.100, emby-server`).
-
-Hostnames are automatically resolved to IP addresses.
-
-## Docker
-
-If running in Docker, expose the debug server port if you want to use the dashboard:
-
-```yaml
-ports:
-  - "9193:9193"
-```
-
-The default host binding is `0.0.0.0`, which works with Docker port mapping.
-
-## Debug Dashboard
-
-When the debug server is enabled, visit `http://<host>:9193/debug` to see:
-
-- All active channels with connected clients
-- Which clients match the Emby identifier (highlighted)
-- Current idle duration per client
-- Recent termination history
-
-The page auto-refreshes at the poll interval rate.
+Check Dispatcharr's active connections while your media server is streaming. The IP address or XC username shown for its connection is what you enter as the identifier for that server.
 
 ## Plugin Actions
 
-In the Dispatcharr plugin settings page:
-
-- **Start Monitor** - Start the background activity monitor (and debug server if enabled)
-- **Stop Monitor** - Stop the monitor and debug server
+- **Restart Monitor** - Apply config changes (restarts monitor and debug server)
 - **Check Status** - Show whether the monitor and debug server are running
+- **Reset All Settings** - Wipe all saved settings and Redis keys
+
+## Debug Dashboard
+
+When enabled, visit `http://<host>:9193/debug` to see active channels, matched clients, media server pool status, and recent terminations.
+
+## FAQ
+
+**What happens during stream failover or buffering?**
+Termination timers pause automatically. Dispatcharr reports a channel state like `buffering` or `connecting` during these events, and the plugin ignores idle time until the stream stabilizes.
+
+**My media server opens multiple connections to the same channel. Will extras get killed?**
+No. Pool protection is channel-based, not count-based. As long as the media server has an active session on that channel, all matching connections on it are considered safe. Extra connections get cleaned up naturally when the media server stops watching the channel entirely.
+
+**What if the same identifier is configured on multiple servers?**
+The lower-numbered server wins. Duplicate identifiers on higher-numbered servers are ignored (with a warning in the logs).
+
+**A connection was terminated but the media server reconnects immediately - won't it loop?**
+The plugin uses a signal-only approach. It sets a Redis key that tells Dispatcharr's stream generator to close the connection on its next chunk. If the media server reconnects, it gets a fresh connection with a new client ID. If it's still in the session pool, the new connection will be left alone.
+
+**What if my media server uses a hostname instead of an IP?**
+Hostnames in the identifier field are automatically resolved to IP addresses for matching.
+
+**Will this affect non-media-server clients (e.g. direct IPTV app connections)?**
+Only connections whose IP or username matches a configured identifier are monitored. Everything else is completely ignored.
 
 ## Requirements
 
 - Dispatcharr v0.22.0 or later
-- Plugin must be enabled in Dispatcharr
 
 ## Building from Source
 
 ```bash
 ./package.sh
 ```
-
-This creates a versioned zip file ready to upload to Dispatcharr.

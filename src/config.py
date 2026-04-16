@@ -17,9 +17,9 @@ DEFAULT_CLEANUP_TIMEOUT: int = 30  # seconds
 DEFAULT_POLL_INTERVAL: int = 10    # seconds
 
 # Key used to look up this plugin's settings in Dispatcharr's PluginConfig
-# table.  Dispatcharr derives the key from the zip folder name, which may be
-# "emby_stream_cleanup" or "emby-stream-cleanup" depending on the build.
-PLUGIN_DB_KEY: str = "emby_stream_cleanup"
+# table.  Dispatcharr derives the key from the zip folder name, which is
+# built from the plugin name in plugin.json (lowercased, spaces to underscores).
+PLUGIN_DB_KEY: str = "embyfin_stream_cleanup"
 
 
 def _load_plugin_config() -> dict:
@@ -38,6 +38,7 @@ REDIS_KEY_PORT     = "emby_cleanup:server_port"
 REDIS_KEY_STOP     = "emby_cleanup:stop_requested"
 REDIS_KEY_LEADER   = "emby_cleanup:leader"
 REDIS_KEY_MONITOR  = "emby_cleanup:monitor_running"
+REDIS_KEY_MANUAL_STOP = "emby_cleanup:manual_stop"
 
 # Keys to wipe on startup (leader key intentionally excluded so the winning
 # worker keeps its claim after cleanup).
@@ -47,6 +48,7 @@ CLEANUP_REDIS_KEYS = [
     REDIS_KEY_PORT,
     REDIS_KEY_STOP,
     REDIS_KEY_MONITOR,
+    REDIS_KEY_MANUAL_STOP,
 ]
 
 # Complete set of every key ever written by this plugin
@@ -61,29 +63,19 @@ LEADER_TTL = 60  # seconds
 HEARTBEAT_TTL = 30  # seconds
 
 # ── Plugin field definitions ─────────────────────────────────────────────────
-PLUGIN_FIELDS = [
-    {
-        "id": "client_identifier",
-        "label": "Client Identifier",
-        "type": "string",
-        "default": "",
-        "description": (
-            "IP address, hostname, or XC username used by the target client to connect to Dispatcharr. "
-            "Comma-separated list for multiple values (e.g. '192.168.1.100, media-server'). "
-            "Use 'ALL' to match every client. "
-            "Matched against client IP and username to identify connections."
-        ),
-        "placeholder": "192.168.1.100, media-server, or ALL",
-    },
+
+# Fields that appear before the media server section
+_FIELDS_BEFORE_SERVERS = [
     {
         "id": "cleanup_timeout",
-        "label": "Idle Timeout (seconds)",
+        "label": "Timeout (seconds)",
         "type": "number",
         "default": DEFAULT_CLEANUP_TIMEOUT,
         "description": (
-            "Seconds a matching client must be idle (no data flowing) before "
-            "its Dispatcharr connection is terminated. "
-            "During stream failover or buffering the timer is paused automatically"
+            "Seconds before a matching client's Dispatcharr connection is terminated. "
+            "Applies to idle connections (no data flowing) and connections whose "
+            "channel is no longer in the media server's active session pool. "
+            "Paused automatically during stream failover or buffering"
         ),
         "placeholder": "30",
     },
@@ -95,30 +87,24 @@ PLUGIN_FIELDS = [
         "description": "How often to check client activity",
         "placeholder": "10",
     },
-    {
-        "id": "emby_url",
-        "label": "Emby Server URL",
-        "type": "string",
-        "default": "",
-        "description": (
-            "Base URL of the Emby server (e.g. http://192.168.1.100:8096). "
-            "When set, the plugin polls Emby's Sessions API to detect orphaned "
-            "connections that Emby failed to close. Leave blank to rely solely "
-            "on idle detection"
-        ),
-        "placeholder": "http://192.168.1.100:8096",
-    },
-    {
-        "id": "emby_api_key",
-        "label": "Emby API Key",
-        "type": "string",
-        "default": "",
-        "description": (
-            "API key for the Emby server. "
-            "Generate one in Emby under Settings > API Keys"
-        ),
-        "placeholder": "your-emby-api-key",
-    },
+]
+
+_MEDIA_SERVER_COUNT_FIELD = {
+    "id": "media_server_count",
+    "label": "Number of Media Servers",
+    "type": "number",
+    "default": 1,
+    "min": 1,
+    "description": (
+        "Number of Emby/Jellyfin servers to monitor for orphan detection. "
+        "After changing this value, save settings and click the blue refresh "
+        "button in the top-right of the My Plugins page to see the new fields"
+    ),
+    "placeholder": "1",
+}
+
+# Fields that appear after the media server section
+_FIELDS_AFTER_SERVERS = [
     {
         "id": "enable_debug_server",
         "label": "Enable Debug Server",
@@ -127,11 +113,11 @@ PLUGIN_FIELDS = [
         "description": "Start an HTTP server for the debug dashboard (optional)",
     },
     {
-        "id": "suppress_access_logs",
-        "label": "Suppress Access Logs",
+        "id": "mask_sensitive_data",
+        "label": "Mask Sensitive Data in Debug Page",
         "type": "boolean",
-        "default": True,
-        "description": "Suppress HTTP access logs for the debug server",
+        "default": False,
+        "description": "Hide usernames, IPs, and URLs in the debug dashboard",
     },
     {
         "id": "port",
@@ -150,3 +136,63 @@ PLUGIN_FIELDS = [
         "placeholder": "0.0.0.0",
     },
 ]
+
+
+def _build_server_fields(n):
+    """Generate URL + API key fields for media server *n* (1-based)."""
+    suffix = f"_{n}" if n > 1 else ""
+    label_num = f" {n}" if n > 1 else ""
+    return [
+        {
+            "id": f"media_server_url{suffix}",
+            "label": f"Media Server{label_num} URL",
+            "type": "string",
+            "default": "",
+            "description": (
+                f"Base URL of media server{label_num} (e.g. http://192.168.1.100:8096). "
+                "Polls the Sessions API to detect orphaned connections. "
+                "Leave blank to disable"
+            ),
+            "placeholder": "http://192.168.1.100:8096",
+        },
+        {
+            "id": f"media_server_api_key{suffix}",
+            "label": f"Media Server{label_num} API Key",
+            "type": "string",
+            "input_type": "password",
+            "default": "",
+            "description": (
+                f"API key for media server{label_num}. "
+                "Generate one under Settings > API Keys"
+            ),
+            "placeholder": "your-api-key",
+        },
+        {
+            "id": f"media_server_identifier{suffix}",
+            "label": f"Media Server{label_num} Client Identifier",
+            "type": "string",
+            "default": "",
+            "description": (
+                f"The IP, hostname, or label that media server{label_num} uses when "
+                "connecting to Dispatcharr (as shown in the Client Identifier column). "
+                "Comma-separated for multiple values. "
+                "This links the server's session pool to its connections for accurate cleanup"
+            ),
+            "placeholder": "emby-prod, 192.168.1.100",
+        },
+    ]
+
+
+def build_plugin_fields(server_count=1):
+    """Build the complete field list for *server_count* media servers."""
+    count = max(1, int(server_count))
+    fields = list(_FIELDS_BEFORE_SERVERS)
+    fields.append(_MEDIA_SERVER_COUNT_FIELD)
+    for n in range(1, count + 1):
+        fields.extend(_build_server_fields(n))
+    fields.extend(_FIELDS_AFTER_SERVERS)
+    return fields
+
+
+# Default field list (1 server) - used by plugin.json and as fallback
+PLUGIN_FIELDS = build_plugin_fields(1)

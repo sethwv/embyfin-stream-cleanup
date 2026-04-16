@@ -9,9 +9,9 @@ import logging
 import time
 
 from .config import (
-    PLUGIN_CONFIG, PLUGIN_FIELDS,
+    PLUGIN_CONFIG, PLUGIN_FIELDS, build_plugin_fields, PLUGIN_DB_KEY,
     REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP,
-    REDIS_KEY_MONITOR,
+    REDIS_KEY_MONITOR, ALL_PLUGIN_REDIS_KEYS,
     DEFAULT_PORT, DEFAULT_HOST,
 )
 from .handler import StreamMonitor
@@ -33,24 +33,25 @@ class Plugin:
     version     = PLUGIN_CONFIG["version"]
     author      = PLUGIN_CONFIG["author"]
 
-    fields  = PLUGIN_FIELDS
+    @property
+    def fields(self):
+        """Build fields dynamically based on saved media_server_count."""
+        try:
+            from apps.plugins.models import PluginConfig
+            cfg = PluginConfig.objects.get(key=PLUGIN_DB_KEY)
+            count = int(cfg.settings.get("media_server_count", 1))
+        except Exception:
+            count = 1
+        return build_plugin_fields(count)
 
     actions = [
         {
-            "id": "start_debug_server",
-            "label": "Start Debug Server",
-            "description": "Start the debug dashboard HTTP server",
-            "button_label": "Start Server",
+            "id": "restart_monitor",
+            "label": "Restart Monitor",
+            "description": "Restart the stream monitor (and debug server if enabled)",
+            "button_label": "Restart Monitor",
             "button_variant": "filled",
-            "button_color": "green",
-        },
-        {
-            "id": "stop_debug_server",
-            "label": "Stop Debug Server",
-            "description": "Stop the debug dashboard HTTP server",
-            "button_label": "Stop Server",
-            "button_variant": "filled",
-            "button_color": "red",
+            "button_color": "orange",
         },
         {
             "id": "status",
@@ -59,6 +60,14 @@ class Plugin:
             "button_label": "Check Status",
             "button_variant": "filled",
             "button_color": "blue",
+        },
+        {
+            "id": "reset_settings",
+            "label": "Reset Settings",
+            "description": "Wipe all saved settings and Redis keys for this plugin",
+            "button_label": "Reset All Settings",
+            "button_variant": "filled",
+            "button_color": "red",
         },
     ]
 
@@ -69,59 +78,109 @@ class Plugin:
 
     # -- Action dispatcher -----------------------------------------------------
 
+    def _stop_debug_server(self):
+        """Stop the debug server if running (local or remote worker)."""
+        server = get_current_server()
+        if server and server.is_running():
+            server.stop()
+            return
+
+        redis_client = get_redis_client()
+        if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+            redis_client.set(REDIS_KEY_STOP, "1")
+            for _ in range(50):
+                if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+                    return
+                time.sleep(0.1)
+            redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
+
+    def _prune_media_server_settings(self, settings):
+        """Remove media server URL/key settings for servers beyond the current count."""
+        try:
+            from apps.plugins.models import PluginConfig
+            cfg = PluginConfig.objects.get(key=PLUGIN_DB_KEY)
+            count = max(1, int(settings.get("media_server_count", 1)))
+            changed = False
+            # Server 1 uses bare keys (media_server_url, media_server_api_key)
+            # Server N>1 uses suffixed keys (media_server_url_N, media_server_api_key_N)
+            stale_keys = [
+                k for k in list(cfg.settings.keys())
+                if (k.startswith("media_server_url_") or k.startswith("media_server_api_key_")
+                    or k.startswith("media_server_identifier_"))
+            ]
+            for k in stale_keys:
+                # Extract the server number from the suffix
+                suffix = k.rsplit("_", 1)[-1]
+                try:
+                    num = int(suffix)
+                except (ValueError, TypeError):
+                    continue
+                if num > count:
+                    del cfg.settings[k]
+                    changed = True
+                    logger.debug(f"Pruned stale setting: {k}")
+            if changed:
+                cfg.save(update_fields=["settings"])
+                # Update the live settings dict so the monitor gets clean values
+                for k in list(settings.keys()):
+                    if k.startswith(("media_server_url_", "media_server_api_key_", "media_server_identifier_")):
+                        suffix = k.rsplit("_", 1)[-1]
+                        try:
+                            if int(suffix) > count:
+                                del settings[k]
+                        except (ValueError, TypeError):
+                            pass
+        except Exception as e:
+            logger.debug(f"Could not prune media server settings: {e}")
+
     def run(self, action: str, params: dict, context: dict):
         """Execute a plugin action and return a result dict."""
         logger_ctx = context.get("logger", logger)
         settings   = context.get("settings", {})
 
-        # -- start_debug_server ------------------------------------------------
-        if action == "start_debug_server":
-            server = get_current_server()
-            if server and server.is_running():
-                return {
-                    "status": "error",
-                    "message": f"Debug server is already running on http://{server.host}:{server.port}/debug",
-                }
+        # -- restart_monitor ---------------------------------------------------
+        if action == "restart_monitor":
+            try:
+                # Clean up stale media server keys when count decreases
+                self._prune_media_server_settings(settings)
 
-            # Check Redis for remote instance
-            redis_client = get_redis_client()
-            if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                rhost = redis_decode(redis_client.get(REDIS_KEY_HOST)) or DEFAULT_HOST
-                rport = redis_decode(redis_client.get(REDIS_KEY_PORT)) or str(DEFAULT_PORT)
-                return {
-                    "status": "error",
-                    "message": f"Debug server is already running on http://{rhost}:{rport}/debug (another worker)",
-                }
+                # Check if debug server was running before we stop it
+                debug_was_running = False
+                server = get_current_server()
+                if server and server.is_running():
+                    debug_was_running = True
+                else:
+                    redis_client = get_redis_client()
+                    if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
+                        debug_was_running = True
 
-            port = int(settings.get("port", DEFAULT_PORT))
-            host = normalize_host(settings.get("host", DEFAULT_HOST), DEFAULT_HOST)
-            server = DebugServer(_monitor, port=port, host=host)
-            if server.start(settings=settings):
-                return {
-                    "status": "success",
-                    "message": f"Debug server started on http://{host}:{port}/debug",
-                }
-            return {"status": "error", "message": "Failed to start debug server. Port may be in use."}
+                self._stop_debug_server()
 
-        # -- stop_debug_server -------------------------------------------------
-        elif action == "stop_debug_server":
-            server = get_current_server()
-            if server and server.is_running():
-                server.stop()
-                return {"status": "success", "message": "Debug server stopped"}
+                if _monitor.is_running():
+                    _monitor.stop()
+                    time.sleep(0.5)
 
-            # Signal remote worker
-            redis_client = get_redis_client()
-            if redis_client and read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                redis_client.set(REDIS_KEY_STOP, "1")
-                for _ in range(50):
-                    if not read_redis_flag(redis_client, REDIS_KEY_RUNNING):
-                        return {"status": "success", "message": "Debug server stopped"}
-                    time.sleep(0.1)
-                redis_client.delete(REDIS_KEY_RUNNING, REDIS_KEY_HOST, REDIS_KEY_PORT, REDIS_KEY_STOP)
-                return {"status": "warning", "message": "Stop signal sent but server did not confirm. Redis keys cleared."}
+                if not _monitor.start(settings=settings):
+                    return {"status": "error", "message": "Failed to start stream monitor"}
 
-            return {"status": "error", "message": "Debug server is not running"}
+                msg = "Stream monitor restarted with current settings"
+
+                # Start debug server if enabled
+                if settings.get("enable_debug_server", False):
+                    port = int(settings.get("port", DEFAULT_PORT))
+                    host = normalize_host(settings.get("host", DEFAULT_HOST), DEFAULT_HOST)
+                    server = DebugServer(_monitor, port=port, host=host)
+                    if server.start(settings=settings):
+                        msg += f" | Debug server on http://{host}:{port}/debug"
+                    else:
+                        msg += " | Debug server failed to start (port may be in use)"
+                elif debug_was_running:
+                    msg += " | Debug server stopped (disabled in settings)"
+
+                return {"status": "success", "message": msg}
+            except Exception as e:
+                logger_ctx.error(f"Error restarting monitor: {e}", exc_info=True)
+                return {"status": "error", "message": f"Failed to restart monitor: {str(e)}"}
 
         # -- status ------------------------------------------------------------
         elif action == "status":
@@ -131,9 +190,14 @@ class Plugin:
 
             redis_client = get_redis_client()
             remote_monitor = False
+            remote_server = False
             if redis_client:
                 try:
                     remote_monitor = read_redis_flag(redis_client, REDIS_KEY_MONITOR)
+                except Exception:
+                    pass
+                try:
+                    remote_server = read_redis_flag(redis_client, REDIS_KEY_RUNNING)
                 except Exception:
                     pass
 
@@ -145,6 +209,10 @@ class Plugin:
 
             if server_running:
                 parts.append(f"Debug server: http://{server.host}:{server.port}/debug")
+            elif remote_server:
+                rhost = redis_decode(redis_client.get(REDIS_KEY_HOST)) or DEFAULT_HOST
+                rport = redis_decode(redis_client.get(REDIS_KEY_PORT)) or str(DEFAULT_PORT)
+                parts.append(f"Debug server: http://{rhost}:{rport}/debug (another worker)")
             else:
                 parts.append("Debug server: stopped")
 
@@ -154,7 +222,55 @@ class Plugin:
                 "running": monitor_running or remote_monitor,
             }
 
+        # -- reset_settings ----------------------------------------------------
+        elif action == "reset_settings":
+            try:
+                result_parts = self._reset_all_settings()
+                return {
+                    "status": "success",
+                    "message": "All plugin settings wiped. " + " | ".join(result_parts)
+                        if result_parts else "All plugin settings wiped.",
+                }
+            except Exception as e:
+                logger_ctx.error(f"Error resetting settings: {e}", exc_info=True)
+                return {"status": "error", "message": f"Reset failed: {str(e)}"}
+
         return {"status": "error", "message": f"Unknown action: {action}"}
+
+    def _reset_all_settings(self):
+        """Wipe all saved settings from DB and all Redis keys for this plugin."""
+        parts = []
+
+        # Stop monitor and debug server first
+        if _monitor.is_running():
+            _monitor.stop()
+            parts.append("monitor stopped")
+        self._stop_debug_server()
+
+        # Clear all plugin Redis keys
+        redis_client = get_redis_client()
+        if redis_client:
+            deleted = redis_client.delete(*ALL_PLUGIN_REDIS_KEYS)
+            if deleted:
+                parts.append(f"{deleted} Redis key(s) deleted")
+            # Also clear any autostart dedup key
+            redis_client.delete("emby_cleanup:leader:autostart_dedup")
+
+        # Wipe saved settings in DB
+        try:
+            from apps.plugins.models import PluginConfig
+            _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
+            for _key in _plugin_keys:
+                cfg = PluginConfig.objects.filter(key=_key).first()
+                if cfg:
+                    cfg.settings = {}
+                    cfg.save(update_fields=["settings"])
+                    parts.append(f"DB settings cleared (key={_key})")
+                    break
+        except Exception as e:
+            parts.append(f"DB clear failed: {e}")
+
+        return parts
 
     def stop(self, context: dict):
         """Called when the plugin is disabled or Dispatcharr is shutting down.

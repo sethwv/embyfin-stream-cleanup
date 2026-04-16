@@ -45,20 +45,10 @@ def attempt_autostart(monitor) -> None:
             return
         _autostart_launched = True
 
-    # Redis-level dedup: survives module reloads (force_reload resets the
-    # module-level flag above).  The key is short-lived so it doesn't
-    # block a genuine cold start after a container restart.
-    try:
-        from .utils import get_redis_client
-        from .config import REDIS_KEY_LEADER
-        _rc = get_redis_client()
-        if _rc:
-            _dedup_key = REDIS_KEY_LEADER + ":autostart_dedup"
-            if not _rc.set(_dedup_key, "1", nx=True, ex=_STARTUP_WAIT + (_RETRY_DELAY * _MAX_ATTEMPTS) + 10):
-                logger.debug("Emby stream cleanup: auto-start already in progress (Redis dedup), skipping")
-                return
-    except Exception:
-        pass  # if Redis isn't up yet, proceed normally
+    # Redis-level dedup is handled later inside the background thread
+    # (leader election). We avoid touching Redis here because Plugin.__init__
+    # runs at import time, potentially before Dispatcharr's Redis is ready.
+    # Blocking here would stall the entire uWSGI worker boot.
 
     threading.Thread(
         target=_autostart_worker,
@@ -90,13 +80,37 @@ def _autostart_worker(monitor) -> None:
     )
     from .utils import get_redis_client, normalize_host
 
+    # ── Step 0: Redis dedup (prevents redundant threads after force_reload) ──
+    # This runs inside the thread (after the daemon is spawned) so it never
+    # blocks uWSGI worker boot.  The initial sleep gives Redis time to be ready.
+    time.sleep(_STARTUP_WAIT)
+    try:
+        from .config import REDIS_KEY_MONITOR
+        _rc = get_redis_client()
+        if _rc:
+            _dedup_key = REDIS_KEY_LEADER + ":autostart_dedup"
+            if not _rc.set(_dedup_key, "1", nx=True, ex=(_RETRY_DELAY * _MAX_ATTEMPTS) + 30):
+                # Key exists, but if nothing is actually running or leading,
+                # it's stale from a previous lifecycle.  Clear and proceed.
+                if not _rc.get(REDIS_KEY_MONITOR) and not _rc.get(REDIS_KEY_LEADER):
+                    logger.debug("Emby stream cleanup: stale autostart_dedup key, clearing")
+                    _rc.delete(_dedup_key)
+                    _rc.set(_dedup_key, "1", nx=True, ex=(_RETRY_DELAY * _MAX_ATTEMPTS) + 30)
+                else:
+                    logger.debug("Emby stream cleanup: auto-start already in progress (Redis dedup), skipping")
+                    return
+    except Exception:
+        pass  # Redis not available yet, leader election will gate us
+
     # Try both key forms (underscore and hyphen)
     _plugin_keys = [PLUGIN_DB_KEY, PLUGIN_DB_KEY.replace('_', '-')]
 
     settings_dict: dict = {}
 
     for attempt in range(_MAX_ATTEMPTS):
-        time.sleep(_STARTUP_WAIT if attempt == 0 else _RETRY_DELAY)
+        # First iteration has no sleep since _STARTUP_WAIT already elapsed above.
+        if attempt > 0:
+            time.sleep(_RETRY_DELAY)
         try:
             from apps.plugins.models import PluginConfig
             config = None
@@ -128,13 +142,35 @@ def _autostart_worker(monitor) -> None:
         )
         return
 
-    # Check that an identifier is configured
-    client_identifier = (settings_dict.get("client_identifier") or "").strip()
-    if not client_identifier:
+    # Check that at least one media server has URL + API key + identifier
+    has_configured_server = False
+    ms_count = max(1, int(settings_dict.get("media_server_count", 1)))
+    for n in range(1, ms_count + 1):
+        sfx = f"_{n}" if n > 1 else ""
+        url = (settings_dict.get(f"media_server_url{sfx}") or "").strip()
+        key = (settings_dict.get(f"media_server_api_key{sfx}") or "").strip()
+        ident = (settings_dict.get(f"media_server_identifier{sfx}") or "").strip()
+        if url and key and ident:
+            has_configured_server = True
+            break
+    if not has_configured_server:
         logger.warning(
-            "Emby stream cleanup: auto-start skipped because client_identifier is not configured"
+            "Emby stream cleanup: auto-start skipped because no media server "
+            "is fully configured (URL + API key + identifier)"
         )
         return
+
+    # -- Respect manual stop ---------------------------------------------------
+    # If the user manually stopped the monitor during this Dispatcharr runtime,
+    # a Redis flag is set.  It's cleared on fresh boot (CLEANUP_REDIS_KEYS).
+    try:
+        from .config import REDIS_KEY_MANUAL_STOP
+        _rc = get_redis_client()
+        if _rc and _rc.get(REDIS_KEY_MANUAL_STOP):
+            logger.debug("Emby stream cleanup: auto-start skipped (manually stopped)")
+            return
+    except Exception:
+        pass
 
     # -- Leader election via Redis SET NX --------------------------------------
     redis_client = get_redis_client()
