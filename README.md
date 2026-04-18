@@ -33,14 +33,14 @@ Only connections matching a configured identifier are ever affected. Non-matchin
 | Number of Media Servers | `1` | How many Emby/Jellyfin servers to monitor. Save and refresh the page to see new fields |
 | Media Server URL | _(empty)_ | Base URL (e.g. `http://192.168.1.100:8096`) |
 | Media Server API Key | _(empty)_ | API key (Settings > API Keys in Emby/Jellyfin) |
-| Media Server Client Identifier | _(empty)_ | IP, hostname, or XC username the server uses when connecting to Dispatcharr. Comma-separated for multiple values |
+| Media Server Client Identifier | _(empty)_ | IP, hostname, CIDR block (e.g. `10.0.0.0/24`), or XC username the server uses when connecting to Dispatcharr. Comma-separated for multiple values |
 | Enable Debug Server | `false` | Start an HTTP debug dashboard |
 | Debug Server Port | `9193` | Port for the debug server |
 | Debug Server Host | `0.0.0.0` | Bind address for the debug server |
 
 ### Finding Your Client Identifier
 
-Check Dispatcharr's active connections while your media server is streaming. The IP address or XC username shown for its connection is what you enter as the identifier for that server.
+Check Dispatcharr's active connections while your media server is streaming. The IP address or XC username shown for its connection is what you enter as the identifier for that server. If your media server runs in a cluster or may connect from multiple addresses in a subnet, use CIDR notation (e.g. `10.0.0.0/24`) to match the entire range.
 
 ## Plugin Actions
 
@@ -68,6 +68,9 @@ The plugin uses a signal-only approach. It sets a Redis key that tells Dispatcha
 
 **What if my media server uses a hostname instead of an IP?**
 Hostnames in the identifier field are automatically resolved to IP addresses for matching.
+
+**Can I match a whole subnet instead of a single IP?**
+Yes. Use CIDR notation like `10.0.0.0/24` or `192.168.1.0/16` in the identifier field. Any client IP within that range will match.
 
 **Will this affect non-media-server clients (e.g. direct IPTV app connections)?**
 Only connections whose IP or username matches a configured identifier are monitored. Everything else is completely ignored.
