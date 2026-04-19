@@ -124,7 +124,7 @@ class StreamMonitor:
     def _ip_in_cidr(ip, cidr):
         """Return True if *ip* falls within the *cidr* network."""
         try:
-            return ipaddress.ip_address(ip) in ipaddress.ip_network(cidr, strict=False)
+            return ipaddress.ip_address(ip.strip()) in ipaddress.ip_network(cidr.strip(), strict=False)
         except ValueError:
             return False
 
@@ -158,11 +158,10 @@ class StreamMonitor:
         if "all" in identifiers:
             srv = (ident_to_server or {}).get("all")
             return True, "ALL (matches every client)", srv
-        ip_lower = ip.lower()
-        uname_lower = username.lower()
+        ip_lower = ip.strip().lower()
+        uname_lower = username.strip().lower()
         for ident in identifiers:
             if "/" in ident:
-                # CIDR block check
                 try:
                     if ipaddress.ip_address(ip_lower) in ipaddress.ip_network(ident, strict=False):
                         srv = (ident_to_server or {}).get(ident)
@@ -340,8 +339,8 @@ class StreamMonitor:
         """
         if not pool_channels_by_ident:
             return None
-        ip_lower = ip.lower()
-        uname_lower = (username or "").lower()
+        ip_lower = ip.strip().lower()
+        uname_lower = (username or "").strip().lower()
         if ip_lower in pool_channels_by_ident:
             return pool_channels_by_ident[ip_lower]
         if uname_lower and uname_lower in pool_channels_by_ident:
