@@ -153,33 +153,48 @@ class StreamMonitor:
 
     @staticmethod
     def _match_client(ip, username, identifiers, resolved_ips,
-                      ident_to_server=None, resolved_ip_to_server=None):
+                      ident_to_servers=None, resolved_ip_to_servers=None):
         """Check if a client matches any configured identifier.
         Supports plain IPs, usernames, hostnames, and CIDR blocks.
-        Returns (matched: bool, reason: str, server_info: dict or None)."""
+        Returns (matched: bool, reason: str, server_info: dict or None).
+        server_info is the first server for the matched identifier; shared
+        identifiers (same ident across multiple servers) are noted in reason."""
+        def _srv_for(ident):
+            servers = (ident_to_servers or {}).get(ident) or []
+            if not servers:
+                return None
+            if len(servers) > 1:
+                nums = ", ".join(str(s.get("num", "?")) for s in servers)
+                return {**servers[0], "_shared": f"servers {nums}"}
+            return servers[0]
+
+        def _srv_for_ip(ip_addr):
+            servers = (resolved_ip_to_servers or {}).get(ip_addr) or []
+            if not servers:
+                return None
+            if len(servers) > 1:
+                nums = ", ".join(str(s.get("num", "?")) for s in servers)
+                return {**servers[0], "_shared": f"servers {nums}"}
+            return servers[0]
+
         if "all" in identifiers:
-            srv = (ident_to_server or {}).get("all")
-            return True, "ALL (matches every client)", srv
+            return True, "ALL (matches every client)", _srv_for("all")
         ip_lower = ip.strip().lower()
         uname_lower = username.strip().lower()
         for ident in identifiers:
             if "/" in ident:
                 try:
                     if ipaddress.ip_address(ip_lower) in ipaddress.ip_network(ident, strict=False):
-                        srv = (ident_to_server or {}).get(ident)
-                        return True, f"CIDR match ({ident})", srv
+                        return True, f"CIDR match ({ident})", _srv_for(ident)
                 except ValueError:
                     pass
                 continue
             if ip_lower == ident:
-                srv = (ident_to_server or {}).get(ident)
-                return True, f"IP match ({ident})", srv
+                return True, f"IP match ({ident})", _srv_for(ident)
             if uname_lower == ident:
-                srv = (ident_to_server or {}).get(ident)
-                return True, f"username match ({ident})", srv
+                return True, f"username match ({ident})", _srv_for(ident)
         if ip in resolved_ips:
-            srv = (resolved_ip_to_server or {}).get(ip)
-            return True, "hostname resolves to IP", srv
+            return True, "hostname resolves to IP", _srv_for_ip(ip)
         return False, "", None
 
     # ── Media server session helpers ─────────────────────────────────────────
@@ -205,14 +220,13 @@ class StreamMonitor:
                 key = (self._settings.get("emby_api_key") or "").strip()
             if url and key:
                 idents = {v.strip().lower() for v in ident_raw.split(",") if v.strip()}
-                # Drop identifiers already claimed by a lower-numbered server
+                # Note identifiers shared with lower-numbered servers (allowed — pools are unioned)
                 dupes = idents & seen_idents
                 if dupes:
-                    logger.warning(
-                        f"Server {n}: ignoring duplicate identifier(s) "
-                        f"{', '.join(sorted(dupes))} (already on a lower-numbered server)"
+                    logger.info(
+                        f"Server {n}: identifier(s) {', '.join(sorted(dupes))} also on a "
+                        "lower-numbered server — pools will be combined for those identifiers"
                     )
-                    idents -= seen_idents
                 if idents:
                     seen_idents.update(idents)
                     servers.append((url, key, idents))
@@ -677,7 +691,7 @@ class StreamMonitor:
 
         # Build unified identifier set and per-identifier server mapping
         identifiers = set()
-        ident_to_server = {}
+        ident_to_servers = {}
         for _url, _key, idents in servers:
             identifiers.update(idents)
         if not identifiers:
@@ -715,19 +729,20 @@ class StreamMonitor:
         # Fetch media server sessions early so idle termination can cross-check
         sessions = self._fetch_media_server_sessions()
 
-        # Build ident→server mapping now that _media_server_status is populated
+        # Build ident→servers mapping now that _media_server_status is populated.
+        # An identifier shared across multiple servers accumulates all their srv_info entries.
         for ms in self._media_server_status:
             ms_url = ms.get("url", "")
             for _url, _key, idents in servers:
                 if _url == ms_url:
                     srv_info = {"num": ms["num"], "name": ms.get("name"), "type": ms.get("type")}
                     for ident in idents:
-                        ident_to_server[ident] = srv_info
+                        ident_to_servers.setdefault(ident, []).append(srv_info)
                     break
-        # Map resolved IPs to the server that owns the resolving identifier.
+        # Map resolved IPs to the servers that own the resolving identifier.
         # Skip CIDR blocks and plain IPs (only resolve hostnames).
-        resolved_ip_to_server = {}
-        for ident, srv_info in ident_to_server.items():
+        resolved_ip_to_servers = {}
+        for ident, srv_list in ident_to_servers.items():
             if "/" in ident:
                 continue  # CIDR block, not a hostname
             try:
@@ -738,8 +753,9 @@ class StreamMonitor:
             try:
                 for info in socket.getaddrinfo(ident, None):
                     ip = info[4][0]
-                    if ip not in resolved_ip_to_server:
-                        resolved_ip_to_server[ip] = srv_info
+                    for srv_info in srv_list:
+                        if srv_info not in resolved_ip_to_servers.setdefault(ip, []):
+                            resolved_ip_to_servers[ip].append(srv_info)
             except (socket.gaierror, OSError):
                 pass
         media_server_channel_numbers = None  # flat set for orphan detection
@@ -868,7 +884,7 @@ class StreamMonitor:
 
                     matched, match_reason, match_server = self._match_client(
                         ip, username, identifiers, resolved_ips,
-                        ident_to_server, resolved_ip_to_server,
+                        ident_to_servers, resolved_ip_to_servers,
                     )
 
                     # Calculate last_active age
