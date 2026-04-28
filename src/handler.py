@@ -335,7 +335,7 @@ class StreamMonitor:
                                 pass
                             results.append({"channel_number": ch_num, "_source_url": url})
             except Exception as e:
-                logger.debug(f"Could not fetch active recordings from {url}: {e}")
+                logger.debug(f"Could not fetch active recordings from media server: {e}")
         return results
 
     @staticmethod
